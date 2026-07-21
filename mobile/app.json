@@ -1,0 +1,10 @@
+{
+  "expo": {
+    "name": "Smart Health UI",
+    "slug": "smart-health-ui",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "assetBundlePatterns": ["**/*"]
+  }
+}

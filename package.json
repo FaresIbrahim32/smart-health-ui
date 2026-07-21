@@ -1,0 +1,9 @@
+{
+  "name": "smart-health-ui-suite",
+  "private": true,
+  "scripts": {
+    "web": "pnpm --dir web dev",
+    "web:build": "pnpm --dir web build",
+    "mobile": "pnpm --dir mobile start"
+  }
+}
