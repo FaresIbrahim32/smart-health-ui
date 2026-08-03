@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as primekg from "./primekg.js";
 import { searchPapers } from "./semanticScholar.js";
+import { canonicalizeDiseaseName } from "./pubtator.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 try {
@@ -167,26 +168,42 @@ const server = http.createServer(async (req, res) => {
       );
       const extraction = parseExtraction(extractionRaw);
 
+      // Best-effort synonym resolution (e.g. "mucoviscidosis" -> "Cystic Fibrosis")
+      // before hitting PrimeKG, which only indexes each node's single canonical
+      // name. Falls back to the raw extraction if PubTator3 has no match or errors.
+      let canonicalDisease = null;
+      if (extraction.disease) {
+        canonicalDisease = await canonicalizeDiseaseName(extraction.disease);
+      }
+      const diseaseQueryName = canonicalDisease || extraction.disease;
+
       let subgraph = null;
       let diseaseNode = null;
-      if (extraction.disease) {
-        diseaseNode = primekg.findDiseaseNode(extraction.disease);
+      if (diseaseQueryName) {
+        diseaseNode = primekg.findDiseaseNode(diseaseQueryName);
+        if (!diseaseNode && canonicalDisease) {
+          // Canonical term didn't match PrimeKG's exact label either - retry with the raw extraction.
+          diseaseNode = primekg.findDiseaseNode(extraction.disease);
+        }
       }
       if (diseaseNode) {
         subgraph = primekg.getDiseaseSubgraph(diseaseNode);
+        if (canonicalDisease && canonicalDisease.toLowerCase() !== extraction.disease.toLowerCase()) {
+          warnings.push(`Resolved "${extraction.disease}" to canonical term "${canonicalDisease}" via PubTator3 before matching PrimeKG.`);
+        }
       } else {
         warnings.push(
           extraction.disease
-            ? `No PrimeKG node matched "${extraction.disease}" — proceeding without knowledge-graph grounding.`
+            ? `No PrimeKG node matched "${extraction.disease}"${canonicalDisease ? ` (or canonical term "${canonicalDisease}")` : ""} — proceeding without knowledge-graph grounding.`
             : "No disease/condition detected in the prompt — proceeding without knowledge-graph grounding."
         );
       }
 
       const queries = [];
-      if (extraction.disease) {
-        queries.push([extraction.disease, extraction.symptomPhrase].filter(Boolean).join(" "));
+      if (diseaseQueryName) {
+        queries.push([diseaseQueryName, extraction.symptomPhrase].filter(Boolean).join(" "));
         if (extraction.deviceIntent) {
-          queries.push([extraction.disease, extraction.deviceIntent, "monitoring"].filter(Boolean).join(" "));
+          queries.push([diseaseQueryName, extraction.deviceIntent, "monitoring"].filter(Boolean).join(" "));
         }
       }
 
