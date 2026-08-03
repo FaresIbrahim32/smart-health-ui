@@ -11,14 +11,16 @@
     "dev": "node server.js & vite --host 127.0.0.1",
     "build": "vite build",
     "build:kg": "node scripts/build-primekg-db.mjs",
+    "build:guidelines": "node scripts/build-guidelines-db.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.4",
-    "vite": "^6.0.7",
+    "fast-xml-parser": "^5.10.1",
+    "lucide-react": "^0.468.0",
+    "pdf-parse": "^2.4.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "lucide-react": "^0.468.0"
-  },
-  "devDependencies": {}
+    "vite": "^6.0.7"
+  }
 }

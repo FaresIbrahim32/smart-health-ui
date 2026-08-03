@@ -251,7 +251,7 @@ function NewDesignPage() {
 }
 
 function DesignSearchResult({ result }) {
-  const { kgGrounded, subgraph, literature, proposal, warnings } = result;
+  const { kgGrounded, subgraph, literature, guidelines, standardsReferenced, proposal, warnings } = result;
   return (
     <div className="design-results">
       {warnings?.length > 0 && (
@@ -286,6 +286,26 @@ function DesignSearchResult({ result }) {
             {paper.abstract && <p>{paper.abstract.slice(0, 220)}...</p>}
           </div>
         ))}
+      </article>
+
+      <article className="panel">
+        <h3><ShieldCheck size={20} />Clinical & Regulatory Guidance</h3>
+        {guidelines.length === 0 && <p>No guideline excerpts retrieved for this prompt.</p>}
+        {guidelines.map((hit) => (
+          <div className="paper-card" key={`${hit.source}-${hit.title}-${hit.text.slice(0, 20)}`}>
+            <a href={hit.url} target="_blank" rel="noreferrer">{hit.title}</a>
+            <span>{hit.source}</span>
+            <p>{hit.text.slice(0, 220)}...</p>
+          </div>
+        ))}
+        <div className="evidence-group">
+          <h4>Standards to verify against <small>(reference only — not full-text indexed)</small></h4>
+          <div className="chip-row">
+            {standardsReferenced.map((s) => (
+              <span className="chip" key={s.standard} title={s.title}>{s.standard}</span>
+            ))}
+          </div>
+        </div>
       </article>
 
       <article className="panel">

@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import * as primekg from "./primekg.js";
 import { searchPapers } from "./semanticScholar.js";
 import { canonicalizeDiseaseName } from "./pubtator.js";
+import * as guidelines from "./guidelines.js";
+import { getRelevantStandards } from "./standards.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 try {
@@ -120,12 +122,28 @@ function summarizeLiteratureForPrompt(papers) {
     .join("\n\n");
 }
 
+function summarizeGuidelinesForPrompt(hits) {
+  if (hits.length === 0) return "No guideline/reference excerpts retrieved.";
+  return hits
+    .map((h, i) => `[G${i + 1}] ${h.source} - ${h.title} (${h.url})\n${h.text.slice(0, 400)}`)
+    .join("\n\n");
+}
+
+function summarizeStandardsForPrompt(standards) {
+  return standards.map((s) => `${s.standard} (${s.publisher}) - ${s.title}`).join("\n");
+}
+
 const PROPOSAL_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 
-You are given two evidence blocks: PrimeKG knowledge-graph evidence (real graph nodes/edges, already retrieved) and Semantic Scholar literature evidence (real papers, already retrieved). Use ONLY these to ground factual claims.
+You are given four evidence blocks, all already retrieved - use ONLY these to ground factual claims:
+1. PrimeKG knowledge-graph evidence (real graph nodes/edges).
+2. Semantic Scholar literature evidence (real papers).
+3. Clinical/interoperability guideline excerpts (real text retrieved from MedlinePlus, ONC SAFER Guides, or USCDI - marked [G1], [G2], ...).
+4. A static list of engineering/regulatory standards by name only (their full text was NOT retrieved or indexed due to copyright - treat these strictly as "standards to verify against," never as if you have read their content).
+
 - Explicitly state which user-mentioned symptom(s) correspond to which PrimeKG phenotype node(s), if any. If the graph has no direct edge for a mentioned symptom, say so plainly instead of implying one exists.
-- Cite evidence inline using the node names/sources or the [n] paper markers given.
-- Do not invent additional citations, standards, or graph edges beyond what is provided.
+- Cite evidence inline using the node names/sources, the [n] paper markers, or the [Gn] guideline markers given.
+- Do not invent additional citations, standards content, or graph edges beyond what is provided. For the standards list, only ever say something needs to be verified against them - never state what they require.
 - Finish with a "Proposed direction (reasoning only, not implemented)" section: potential wearable/monitoring concepts that follow from the grounded evidence. This is a written design proposal only — do not claim to call any API, hardware, or build anything.`;
 
 const server = http.createServer(async (req, res) => {
@@ -223,9 +241,24 @@ const server = http.createServer(async (req, res) => {
         return true;
       });
 
+      let guidelineHits = [];
+      if (guidelines.isAvailable()) {
+        try {
+          const guidelineQuery = [diseaseQueryName, extraction.symptomPhrase, extraction.deviceIntent].filter(Boolean).join(" ") || prompt;
+          guidelineHits = await guidelines.searchGuidelines(guidelineQuery, 5);
+        } catch (error) {
+          warnings.push(`Guideline search failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      } else {
+        warnings.push("Guideline/standards index not built yet — run `pnpm --dir web run build:guidelines`.");
+      }
+      const standards = getRelevantStandards();
+
       const evidenceBlocks = [
         subgraph ? `PrimeKG evidence:\n${summarizeSubgraphForPrompt(subgraph)}` : "PrimeKG evidence: none (no graph match).",
-        `Literature evidence:\n${summarizeLiteratureForPrompt(papers)}`
+        `Literature evidence:\n${summarizeLiteratureForPrompt(papers)}`,
+        `Clinical/interoperability guideline evidence:\n${summarizeGuidelinesForPrompt(guidelineHits)}`,
+        `Standards to verify against (names only, not full-text retrieved):\n${summarizeStandardsForPrompt(standards)}`
       ].join("\n\n");
 
       const proposal = await callOllama([
@@ -238,6 +271,8 @@ const server = http.createServer(async (req, res) => {
         extraction,
         subgraph,
         literature: papers,
+        guidelines: guidelineHits,
+        standardsReferenced: standards,
         proposal,
         warnings
       });
