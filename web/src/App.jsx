@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -32,6 +32,9 @@ import {
   UsersRound,
   Wrench
 } from "lucide-react";
+import { Canvas } from "@react-three/fiber";
+import { OrbitControls } from "@react-three/drei";
+import { buildAssembly, geom3ToBufferGeometry, exportStlBlob } from "./cadAssembly.js";
 import "./styles.css";
 
 const pages = [
@@ -312,7 +315,62 @@ function DesignSearchResult({ result }) {
         <h3><Brain size={20} />Proposed Direction (reasoning only, not implemented)</h3>
         <p className="proposal-text">{proposal}</p>
       </article>
+
+      {result.cadLayout && <CadLayoutPanel layout={result.cadLayout} />}
     </div>
+  );
+}
+
+function CadLayoutPanel({ layout }) {
+  const assembly = useMemo(() => buildAssembly(layout), [layout]);
+
+  function downloadStl() {
+    const blob = exportStlBlob(assembly.unioned);
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${layout.device.replace(/\s+/g, "-").toLowerCase()}.stl`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <article className="panel">
+      <h3><Box size={20} />CAD Design Concept: {layout.device}</h3>
+      <div className="design-status">
+        <span className="status-dot" />
+        {layout.caveat}
+      </div>
+      <div className="cad-preview-canvas">
+        <Canvas camera={{ position: [3.5, 2.5, 3.5], fov: 45 }}>
+          <ambientLight intensity={0.6} />
+          <directionalLight position={[4, 5, 4]} intensity={1} />
+          <gridHelper args={[6, 12, "#1463ff", "#0a1f30"]} />
+          {assembly.parts.map((part) => <CadPartMesh key={part.id} part={part} />)}
+          <OrbitControls />
+        </Canvas>
+      </div>
+      <button className="primary" onClick={downloadStl}>Download STL</button>
+      <div className="evidence-group">
+        <h4>Component evidence</h4>
+        {assembly.parts.map((part) => (
+          <div className="list-row" key={part.id}>
+            <Check size={16} />
+            <span><strong>{part.type}</strong> ({part.material}) — {part.groundedIn}</span>
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function CadPartMesh({ part }) {
+  const geometry = useMemo(() => geom3ToBufferGeometry(part.geom3), [part.geom3]);
+  return (
+    <mesh>
+      <primitive object={geometry} attach="geometry" />
+      <meshStandardMaterial color={part.color} metalness={0.3} roughness={0.4} />
+    </mesh>
   );
 }
 

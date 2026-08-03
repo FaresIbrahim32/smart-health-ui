@@ -146,6 +146,45 @@ You are given four evidence blocks, all already retrieved - use ONLY these to gr
 - Do not invent additional citations, standards content, or graph edges beyond what is provided. For the standards list, only ever say something needs to be verified against them - never state what they require.
 - Finish with a "Proposed direction (reasoning only, not implemented)" section: potential wearable/monitoring concepts that follow from the grounded evidence. This is a written design proposal only — do not claim to call any API, hardware, or build anything.`;
 
+const CAD_LAYOUT_SYSTEM_PROMPT = `You turn an already-written wearable device proposal into a short list of physical components for an illustrative CAD preview - not a manufacturing drawing. A separate deterministic renderer decides the 3D shapes and layout; your job is only to name the right parts and ground them in evidence.
+
+Respond with ONLY a JSON object, no prose, no markdown fences, matching exactly:
+{"device": string, "components": [{"id": string, "type": string, "material": string, "groundedIn": string}], "caveat": string}
+
+Rules:
+- 4-8 components. Typical wearable parts: a main housing/PCB/controller, a strap/band, one or more sensor modules, a battery, a clasp.
+- "type" is a short human label for the part (e.g. "Pulse oximeter sensor"), not a geometric shape.
+- "groundedIn" must name the SPECIFIC evidence behind that component's inclusion or material choice (a PrimeKG anatomy/phenotype node, a [n] paper marker, a [Gn] guideline marker, or the proposal text). If a component is purely illustrative with no evidence behind it, say "illustrative only - no direct evidence" rather than inventing a justification.
+- "caveat" must plainly state this is an illustrative generic wearable-band layout, not modeled to the specific device form factor, and not manufacturing/engineering specifications.
+- Do not invent evidence markers that were not given to you.`;
+
+function parseCadLayout(raw) {
+  try {
+    const cleaned = raw.trim().replace(/^```json\s*|```$/g, "");
+    const parsed = JSON.parse(cleaned);
+    if (!Array.isArray(parsed.components)) return null;
+
+    const components = parsed.components
+      .filter((c) => c && (c.id || c.type))
+      .slice(0, 10)
+      .map((c, i) => ({
+        id: String(c.id || `component-${i + 1}`),
+        type: String(c.type || c.id || "component"),
+        material: String(c.material || "unspecified"),
+        groundedIn: String(c.groundedIn || "illustrative only - no direct evidence")
+      }));
+
+    if (components.length === 0) return null;
+    return {
+      device: String(parsed.device || "Wearable concept"),
+      components,
+      caveat: String(parsed.caveat || "Illustrative generic wearable-band layout - not modeled to the specific device form factor, and not manufacturing specifications.")
+    };
+  } catch {
+    return null;
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === "OPTIONS") {
     return sendJson(res, 204, {});
@@ -266,6 +305,21 @@ const server = http.createServer(async (req, res) => {
         { role: "user", content: `Original design prompt: ${prompt}\n\n${evidenceBlocks}` }
       ]);
 
+      let cadLayout = null;
+      try {
+        const cadLayoutRaw = await callOllama(
+          [
+            { role: "system", content: CAD_LAYOUT_SYSTEM_PROMPT },
+            { role: "user", content: `Original design prompt: ${prompt}\n\nProposal:\n${proposal}\n\n${evidenceBlocks}` }
+          ],
+          { format: "json" }
+        );
+        cadLayout = parseCadLayout(cadLayoutRaw);
+        if (!cadLayout) warnings.push("Could not generate a CAD layout preview for this proposal.");
+      } catch (error) {
+        warnings.push(`CAD layout generation failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+
       return sendJson(res, 200, {
         kgGrounded: Boolean(subgraph),
         extraction,
@@ -274,6 +328,7 @@ const server = http.createServer(async (req, res) => {
         guidelines: guidelineHits,
         standardsReferenced: standards,
         proposal,
+        cadLayout,
         warnings
       });
     } catch (error) {

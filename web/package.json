@@ -15,12 +15,17 @@
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
+    "@jscad/modeling": "^2.13.0",
+    "@jscad/stl-serializer": "^2.1.23",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.7.0",
     "@vitejs/plugin-react": "^4.3.4",
     "fast-xml-parser": "^5.10.1",
     "lucide-react": "^0.468.0",
     "pdf-parse": "^2.4.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "three": "^0.185.1",
     "vite": "^6.0.7"
   }
 }
