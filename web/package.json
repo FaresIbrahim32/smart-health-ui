@@ -3,10 +3,14 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
     "api": "node server.js",
     "dev": "node server.js & vite --host 127.0.0.1",
     "build": "vite build",
+    "build:kg": "node scripts/build-primekg-db.mjs",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {

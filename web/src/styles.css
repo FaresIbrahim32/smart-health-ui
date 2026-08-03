@@ -76,7 +76,27 @@ p { color: var(--muted); line-height: 1.45; }
 .choice-card i { position: absolute; right: 22px; top: 22px; width: 28px; height: 28px; border: 3px solid #496174; border-radius: 50%; }
 .prompt-example { max-width: 820px; display: flex; gap: 16px; padding: 20px; margin-bottom: 28px; }
 .composer { min-height: 110px; border-color: rgba(20, 99, 255, .7); box-shadow: 0 0 20px rgba(20, 99, 255, .28); display: flex; align-items: center; gap: 20px; padding: 24px; font-size: 20px; }
-.composer button { margin-left: auto; background: transparent; border: 0; color: #2d86ff; }
+.composer textarea { flex: 1; min-width: 0; resize: vertical; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; line-height: 1.4; }
+.composer textarea::placeholder { color: #6f8293; }
+.composer button { margin-left: auto; background: transparent; border: 0; color: #2d86ff; flex: none; }
+.composer button:disabled { opacity: .45; cursor: not-allowed; }
+.design-status { display: flex; align-items: center; gap: 10px; color: var(--muted); margin: 18px 0; padding: 14px 18px; border: 1px solid var(--line); border-radius: 8px; background: rgba(10, 31, 48, .6); }
+.design-status.error { color: var(--red); border-color: rgba(243, 59, 95, .4); }
+.design-results { display: grid; gap: 14px; margin-top: 8px; }
+.warnings-panel { color: var(--yellow); }
+.evidence-group { margin-top: 14px; }
+.evidence-group h4 { color: #dce7f1; font-size: 15px; margin: 0 0 8px; }
+.evidence-group h4 small { color: var(--muted); font-weight: 400; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { background: rgba(20, 99, 255, .15); border: 1px solid rgba(72, 140, 190, .4); border-radius: 999px; padding: 6px 12px; font-size: 13px; color: #dce7f1; }
+.chip-empty { color: var(--muted); background: transparent; }
+.paper-card { padding: 12px 0; border-bottom: 1px solid rgba(130, 180, 215, .08); }
+.paper-card:last-child { border-bottom: 0; }
+.paper-card a { color: #4cbfff; font-weight: 700; text-decoration: none; }
+.paper-card a:hover { text-decoration: underline; }
+.paper-card span { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
+.paper-card p { margin-top: 6px; font-size: 14px; }
+.proposal-text { white-space: pre-wrap; color: #dce7f1; }
 .metric-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 18px 0; }
 .metric { padding: 20px; color: #dce7f1; font-weight: 700; }
 .concept-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }

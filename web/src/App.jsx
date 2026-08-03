@@ -174,6 +174,36 @@ function KnowledgePage() {
 }
 
 function NewDesignPage() {
+  const [prompt, setPrompt] = useState("");
+  const [status, setStatus] = useState("idle");
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(null);
+
+  async function runDesignSearch(event) {
+    event.preventDefault();
+    const trimmed = prompt.trim();
+    if (!trimmed || status === "loading") return;
+
+    setStatus("loading");
+    setError(null);
+    setResult(null);
+
+    try {
+      const response = await fetch("http://127.0.0.1:3001/api/design-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: trimmed })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || data.error || "Design search failed");
+      setResult(data);
+      setStatus("idle");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Design search failed");
+      setStatus("error");
+    }
+  }
+
   return (
     <div className="new-design">
       <div className="center-copy">
@@ -187,8 +217,95 @@ function NewDesignPage() {
         ))}
       </div>
       <h2>2. Describe your design goal</h2>
-      <div className="prompt-example"><Sparkles size={24} /><div><strong>Example Prompt</strong><p>"Placeholder prompt describing a wearable system and companion app."</p></div></div>
-      <div className="composer"><MessageSquare size={32} /><span>Describe a placeholder smart health product concept for a target user group.</span><button><Send /></button></div>
+      <div className="prompt-example"><Sparkles size={24} /><div><strong>Example Prompt</strong><p>"Design a non-invasive wearable system for continuously monitoring shortness of breath in patients with Cystic Fibrosis."</p></div></div>
+      <form className="composer" onSubmit={runDesignSearch}>
+        <MessageSquare size={32} />
+        <textarea
+          aria-label="Describe your design goal"
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder="Describe a smart health product concept for a target user group and condition..."
+          rows={2}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) runDesignSearch(event);
+          }}
+        />
+        <button type="submit" disabled={status === "loading" || !prompt.trim()}><Send /></button>
+      </form>
+
+      {status === "loading" && (
+        <div className="design-status">
+          <span className="status-dot" />
+          Grounding in PrimeKG, searching literature, and reasoning about your prompt — this can take up to a minute...
+        </div>
+      )}
+      {status === "error" && (
+        <div className="design-status error">
+          <span className="status-dot error" />
+          {error}
+        </div>
+      )}
+      {result && <DesignSearchResult result={result} />}
+    </div>
+  );
+}
+
+function DesignSearchResult({ result }) {
+  const { kgGrounded, subgraph, literature, proposal, warnings } = result;
+  return (
+    <div className="design-results">
+      {warnings?.length > 0 && (
+        <article className="panel warnings-panel">
+          <h3><SlidersHorizontal size={20} />Warnings</h3>
+          {warnings.map((w) => <div className="list-row" key={w}>{w}</div>)}
+        </article>
+      )}
+
+      <article className="panel">
+        <h3><Database size={20} />Knowledge Graph Grounding (PrimeKG)</h3>
+        {!kgGrounded && <p>No matching disease node found in PrimeKG for this prompt.</p>}
+        {kgGrounded && (
+          <>
+            <p>
+              Disease: <strong>{subgraph.disease.name}</strong> ({subgraph.disease.source}:{subgraph.disease.id})
+            </p>
+            <EvidenceGroup label="Phenotypes" nodes={subgraph.phenotypes} total={subgraph.counts.phenotypesTotal} />
+            <EvidenceGroup label="Associated genes/proteins" nodes={subgraph.proteins} total={subgraph.counts.proteinsTotal} />
+            <EvidenceGroup label="Related anatomy" nodes={subgraph.anatomy} total={subgraph.anatomy.length} />
+          </>
+        )}
+      </article>
+
+      <article className="panel">
+        <h3><BookOpen size={20} />Literature Evidence (Semantic Scholar)</h3>
+        {literature.length === 0 && <p>No papers retrieved for this prompt.</p>}
+        {literature.map((paper) => (
+          <div className="paper-card" key={paper.title}>
+            <a href={paper.url} target="_blank" rel="noreferrer">{paper.title}</a>
+            <span>{[paper.venue, paper.year].filter(Boolean).join(" · ")}</span>
+            {paper.abstract && <p>{paper.abstract.slice(0, 220)}...</p>}
+          </div>
+        ))}
+      </article>
+
+      <article className="panel">
+        <h3><Brain size={20} />Proposed Direction (reasoning only, not implemented)</h3>
+        <p className="proposal-text">{proposal}</p>
+      </article>
+    </div>
+  );
+}
+
+function EvidenceGroup({ label, nodes, total }) {
+  return (
+    <div className="evidence-group">
+      <h4>{label} <small>(showing {nodes.length} of {total})</small></h4>
+      <div className="chip-row">
+        {nodes.length === 0 && <span className="chip chip-empty">none found</span>}
+        {nodes.map((node) => (
+          <span className="chip" key={node.index} title={`${node.source}:${node.id}`}>{node.name}</span>
+        ))}
+      </div>
     </div>
   );
 }
