@@ -34,6 +34,7 @@ import {
 } from "lucide-react";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
+import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { buildAssembly, geom3ToBufferGeometry, exportStlBlob } from "./cadAssembly.js";
 import "./styles.css";
 
@@ -424,9 +425,7 @@ function CadPage() {
         <Panel title="Layer Controls" icon={Gauge} items={["Opacity: 60%", "Material: Medical Grade TPU", "Thickness: 1.2 mm", "Color: Safety yellow"]} />
       </aside>
       <section className="cad-stage">
-        <div className="toolbar">{[PenTool, RefreshCw, Search, Eye, Box, Layers].map((Icon, idx) => <button key={idx}><Icon size={18} /></button>)}</div>
-        <div className="model-art"><div className="arc arc-1" /><div className="arc arc-2" /><div className="sensor s1" /><div className="sensor s2" /><span>3D Placeholder Model</span></div>
-        <div className="layer-tabs"><button>PCB Only</button><button>Sensors</button><button>Casing</button><button>All Layers</button></div>
+        <StlUploadViewer />
       </section>
       <aside className="right-rail cad-copy">
         <h1>Generative Design Explanation</h1>
@@ -436,6 +435,75 @@ function CadPage() {
         <Chat compact />
         <div className="action-row"><button className="success">Accept Design</button><button className="primary">Proceed to Prototype</button></div>
       </aside>
+    </div>
+  );
+}
+
+function StlUploadViewer() {
+  const [model, setModel] = useState(null); // { fileName, geometry, dims, triangleCount, maxDim }
+  const [error, setError] = useState(null);
+
+  async function handleFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setError(null);
+
+    try {
+      const buffer = await file.arrayBuffer();
+      const geometry = new STLLoader().parse(buffer);
+      geometry.computeBoundingBox();
+      geometry.center();
+      geometry.computeVertexNormals();
+
+      const box = geometry.boundingBox;
+      const dims = [box.max.x - box.min.x, box.max.y - box.min.y, box.max.z - box.min.z];
+      const maxDim = Math.max(...dims, 0.001);
+      const triangleCount = geometry.index ? geometry.index.count / 3 : geometry.attributes.position.count / 3;
+
+      setModel({ fileName: file.name, geometry, dims, triangleCount, maxDim });
+    } catch (err) {
+      setError(err instanceof Error ? `Could not parse this STL file: ${err.message}` : "Could not parse this STL file.");
+      setModel(null);
+    }
+  }
+
+  return (
+    <div className="stl-viewer">
+      <div className="stl-toolbar">
+        <label className="stl-upload-button">
+          <CloudUpload size={16} />
+          {model ? "Load a different STL" : "Upload an STL file"}
+          <input type="file" accept=".stl" onChange={handleFile} />
+        </label>
+        {model && (
+          <span className="stl-file-meta">
+            {model.fileName} · {model.triangleCount.toLocaleString()} triangles · {model.dims.map((d) => d.toFixed(1)).join(" × ")} units
+          </span>
+        )}
+      </div>
+
+      {error && <div className="design-status error"><span className="status-dot error" />{error}</div>}
+
+      {model ? (
+        <div className="stl-canvas" key={model.fileName}>
+          <Canvas camera={{ position: [model.maxDim * 1.6, model.maxDim * 1.2, model.maxDim * 1.6], fov: 45 }}>
+            <ambientLight intensity={0.6} />
+            <directionalLight position={[model.maxDim * 2, model.maxDim * 2.5, model.maxDim * 2]} intensity={1} />
+            <gridHelper args={[model.maxDim * 4, 12, "#1463ff", "#0a1f30"]} />
+            <mesh geometry={model.geometry}>
+              <meshStandardMaterial color="#52b9ff" metalness={0.3} roughness={0.4} />
+            </mesh>
+            <OrbitControls />
+          </Canvas>
+        </div>
+      ) : (
+        !error && (
+          <div className="stl-empty">
+            <Box size={48} />
+            <p>Upload an .stl file to view and rotate/zoom it here.</p>
+          </div>
+        )
+      )}
     </div>
   );
 }

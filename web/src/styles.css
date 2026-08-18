@@ -124,6 +124,13 @@ p { color: var(--muted); line-height: 1.45; }
 .primary { width: 100%; background: #0d58ea; font-weight: 750; }
 .success { background: #109244; border-color: rgba(55, 211, 117, .6); }
 .cad-stage { min-height: 780px; position: relative; overflow: hidden; background-color: #091a26; background-image: linear-gradient(rgba(99,155,190,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(99,155,190,.08) 1px, transparent 1px); background-size: 22px 22px; }
+.stl-viewer { display: flex; flex-direction: column; height: 100%; }
+.stl-toolbar { display: flex; align-items: center; gap: 14px; padding: 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.stl-upload-button { display: flex; align-items: center; gap: 8px; padding: 10px 16px; background: #073da8; border: 1px solid rgba(47,133,255,.6); border-radius: 6px; cursor: pointer; font-weight: 600; }
+.stl-upload-button input { display: none; }
+.stl-file-meta { color: var(--muted); font-size: 13px; }
+.stl-canvas { flex: 1; min-height: 600px; }
+.stl-empty { flex: 1; min-height: 600px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; color: var(--muted); }
 .toolbar { display: flex; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
 .toolbar button { width: 36px; height: 36px; border-radius: 4px; background: rgba(7,61,168,.65); display: grid; place-items: center; }
 .model-art { height: 560px; position: relative; display: grid; place-items: center; }
