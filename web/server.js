@@ -1,5 +1,8 @@
 import http from "node:http";
+import { pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import * as primekg from "./primekg.js";
 import { searchPapers } from "./semanticScholar.js";
@@ -17,6 +20,27 @@ try {
 const PORT = Number(process.env.SMART_HEALTH_API_PORT || 3001);
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2:latest";
+const DATA_DIR = path.join(__dirname, "data");
+if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+
+const authDb = new DatabaseSync(path.join(DATA_DIR, "auth.sqlite"));
+authDb.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+`);
 
 const SYSTEM_PROMPT = `You are Smart Health by Design, an AI design co-pilot for biomedical technology innovation.
 
@@ -35,7 +59,7 @@ function sendJson(res, status, body) {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
-    "Access-Control-Allow-Headers": "Content-Type"
+    "Access-Control-Allow-Headers": "Content-Type, Authorization"
   });
   res.end(JSON.stringify(body));
 }
@@ -45,6 +69,62 @@ async function readJson(req) {
   for await (const chunk of req) chunks.push(chunk);
   const body = Buffer.concat(chunks).toString("utf8");
   return body ? JSON.parse(body) : {};
+}
+
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function publicUser(row) {
+  return { id: row.id, name: row.name, email: row.email };
+}
+
+function hashPassword(password, salt = randomBytes(16).toString("hex")) {
+  const hash = pbkdf2Sync(String(password), salt, 120000, 32, "sha256").toString("hex");
+  return { salt, hash };
+}
+
+function verifyPassword(password, row) {
+  const { hash } = hashPassword(password, row.password_salt);
+  const actual = Buffer.from(hash, "hex");
+  const expected = Buffer.from(row.password_hash, "hex");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function createSession(userId) {
+  const token = randomBytes(32).toString("hex");
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 14).toISOString();
+  authDb.prepare("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)").run(token, userId, expiresAt);
+  return { token, expiresAt };
+}
+
+function getBearerToken(req) {
+  const header = req.headers.authorization || "";
+  const match = String(header).match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : null;
+}
+
+function userFromToken(token) {
+  if (!token) return null;
+  const row = authDb
+    .prepare(
+      `SELECT users.id, users.name, users.email
+       FROM sessions
+       JOIN users ON users.id = sessions.user_id
+       WHERE sessions.token = ? AND sessions.expires_at > ?`
+    )
+    .get(token, new Date().toISOString());
+  return row ? publicUser(row) : null;
+}
+
+function validateAuthInput({ name, email, password }, mode) {
+  const cleanEmail = normalizeEmail(email);
+  const cleanName = String(name || "").trim();
+  const cleanPassword = String(password || "");
+  if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) return "Enter a valid email address.";
+  if (mode === "signup" && cleanName.length < 2) return "Enter your name.";
+  if (cleanPassword.length < 8) return "Password must be at least 8 characters.";
+  return null;
 }
 
 function toOllamaMessages(messages = [], context = "") {
@@ -146,16 +226,21 @@ You are given four evidence blocks, all already retrieved - use ONLY these to gr
 - Do not invent additional citations, standards content, or graph edges beyond what is provided. For the standards list, only ever say something needs to be verified against them - never state what they require.
 - Finish with a "Proposed direction (reasoning only, not implemented)" section: potential wearable/monitoring concepts that follow from the grounded evidence. This is a written design proposal only — do not claim to call any API, hardware, or build anything.`;
 
-const CAD_LAYOUT_SYSTEM_PROMPT = `You turn an already-written wearable device proposal into a short list of physical components for an illustrative CAD preview - not a manufacturing drawing. A separate deterministic renderer decides the 3D shapes and layout; your job is only to name the right parts and ground them in evidence.
+const CAD_LAYOUT_SYSTEM_PROMPT = `You turn an already-written health device proposal into a form factor and short list of physical components for an illustrative CAD preview - not a manufacturing drawing. A separate deterministic renderer decides the exact 3D shapes and layout; your job is to choose the broad product form and name the right parts grounded in evidence.
 
 Respond with ONLY a JSON object, no prose, no markdown fences, matching exactly:
-{"device": string, "components": [{"id": string, "type": string, "material": string, "groundedIn": string}], "caveat": string}
+{"device": string, "formFactor": "wristband" | "mouthguard" | "cast" | "patch" | "handheld", "components": [{"id": string, "type": string, "material": string, "groundedIn": string}], "caveat": string}
 
 Rules:
-- 4-8 components. Typical wearable parts: a main housing/PCB/controller, a strap/band, one or more sensor modules, a battery, a clasp.
+- Choose "mouthguard" for oral/dental/biting/bruxism/saliva/palate concepts.
+- Choose "cast" for limb support, fracture, immobilization, orthopedic, or rehab concepts.
+- Choose "patch" for skin adhesive, chest, glucose, ECG, temperature, wound, or low-profile body-worn concepts.
+- Choose "handheld" for scanner, inhaler-like, grip, portable reader, or non-worn concepts.
+- Choose "wristband" only for wrist/bracelet/watch/band concepts.
+- 4-8 components. Typical parts may include a main housing/PCB/controller, sensors, battery, enclosure, strap/adhesive/cast shell/mouthguard base depending on the form factor.
 - "type" is a short human label for the part (e.g. "Pulse oximeter sensor"), not a geometric shape.
 - "groundedIn" must name the SPECIFIC evidence behind that component's inclusion or material choice (a PrimeKG anatomy/phenotype node, a [n] paper marker, a [Gn] guideline marker, or the proposal text). If a component is purely illustrative with no evidence behind it, say "illustrative only - no direct evidence" rather than inventing a justification.
-- "caveat" must plainly state this is an illustrative generic wearable-band layout, not modeled to the specific device form factor, and not manufacturing/engineering specifications.
+- "caveat" must plainly state this is an illustrative generic layout for the chosen form factor, not manufacturing/engineering specifications.
 - Do not invent evidence markers that were not given to you.`;
 
 function parseCadLayout(raw) {
@@ -177,12 +262,43 @@ function parseCadLayout(raw) {
     if (components.length === 0) return null;
     return {
       device: String(parsed.device || "Wearable concept"),
+      formFactor: ["wristband", "mouthguard", "cast", "patch", "handheld"].includes(parsed.formFactor)
+        ? parsed.formFactor
+        : null,
       components,
-      caveat: String(parsed.caveat || "Illustrative generic wearable-band layout - not modeled to the specific device form factor, and not manufacturing specifications.")
+      caveat: String(parsed.caveat || "Illustrative generic layout for the selected form factor - not manufacturing specifications.")
     };
   } catch {
     return null;
   }
+}
+
+async function generateCadLayout({ prompt, proposal, evidenceBlocks, warnings }) {
+  try {
+    const cadLayoutRaw = await callOllama(
+      [
+        { role: "system", content: CAD_LAYOUT_SYSTEM_PROMPT },
+        { role: "user", content: `Original design prompt: ${prompt}\n\nProposal:\n${proposal}\n\n${evidenceBlocks}` }
+      ],
+      { format: "json" }
+    );
+    const cadLayout = parseCadLayout(cadLayoutRaw);
+    if (!cadLayout) warnings.push("Could not generate a CAD layout preview for this proposal.");
+    return cadLayout;
+  } catch (error) {
+    warnings.push(`CAD layout generation failed: ${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  }
+}
+
+function evidenceBlocksFromResult(result) {
+  const standards = result.standardsReferenced || getRelevantStandards();
+  return [
+    result.subgraph ? `PrimeKG evidence:\n${summarizeSubgraphForPrompt(result.subgraph)}` : "PrimeKG evidence: none (no graph match).",
+    `Literature evidence:\n${summarizeLiteratureForPrompt(result.literature || [])}`,
+    `Clinical/interoperability guideline evidence:\n${summarizeGuidelinesForPrompt(result.guidelines || [])}`,
+    `Standards to verify against (names only, not full-text retrieved):\n${summarizeStandardsForPrompt(standards)}`
+  ].join("\n\n");
 }
 
 const server = http.createServer(async (req, res) => {
@@ -192,6 +308,67 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "GET" && req.url === "/api/health") {
     return sendJson(res, 200, { ok: true, model: OLLAMA_MODEL, kgAvailable: primekg.isAvailable() });
+  }
+
+  if (req.method === "POST" && req.url === "/api/auth/signup") {
+    try {
+      const body = await readJson(req);
+      const validationError = validateAuthInput(body, "signup");
+      if (validationError) return sendJson(res, 400, { error: validationError });
+
+      const email = normalizeEmail(body.email);
+      const name = String(body.name).trim();
+      const existing = authDb.prepare("SELECT id FROM users WHERE email = ?").get(email);
+      if (existing) return sendJson(res, 409, { error: "An account already exists for this email." });
+
+      const { salt, hash } = hashPassword(body.password);
+      const result = authDb
+        .prepare("INSERT INTO users (name, email, password_hash, password_salt) VALUES (?, ?, ?, ?)")
+        .run(name, email, hash, salt);
+      const user = publicUser({ id: result.lastInsertRowid, name, email });
+      const session = createSession(user.id);
+      return sendJson(res, 201, { user, ...session });
+    } catch (error) {
+      return sendJson(res, 500, {
+        error: "Could not create account",
+        detail: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  if (req.method === "POST" && req.url === "/api/auth/login") {
+    try {
+      const body = await readJson(req);
+      const validationError = validateAuthInput(body, "login");
+      if (validationError) return sendJson(res, 400, { error: validationError });
+
+      const email = normalizeEmail(body.email);
+      const row = authDb.prepare("SELECT * FROM users WHERE email = ?").get(email);
+      if (!row || !verifyPassword(body.password, row)) {
+        return sendJson(res, 401, { error: "Email or password is incorrect." });
+      }
+
+      const user = publicUser(row);
+      const session = createSession(user.id);
+      return sendJson(res, 200, { user, ...session });
+    } catch (error) {
+      return sendJson(res, 500, {
+        error: "Could not log in",
+        detail: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  if (req.method === "GET" && req.url === "/api/auth/me") {
+    const user = userFromToken(getBearerToken(req));
+    if (!user) return sendJson(res, 401, { error: "Not signed in." });
+    return sendJson(res, 200, { user });
+  }
+
+  if (req.method === "POST" && req.url === "/api/auth/logout") {
+    const token = getBearerToken(req);
+    if (token) authDb.prepare("DELETE FROM sessions WHERE token = ?").run(token);
+    return sendJson(res, 200, { ok: true });
   }
 
   if (req.method === "POST" && req.url === "/api/chat") {
@@ -305,20 +482,7 @@ const server = http.createServer(async (req, res) => {
         { role: "user", content: `Original design prompt: ${prompt}\n\n${evidenceBlocks}` }
       ]);
 
-      let cadLayout = null;
-      try {
-        const cadLayoutRaw = await callOllama(
-          [
-            { role: "system", content: CAD_LAYOUT_SYSTEM_PROMPT },
-            { role: "user", content: `Original design prompt: ${prompt}\n\nProposal:\n${proposal}\n\n${evidenceBlocks}` }
-          ],
-          { format: "json" }
-        );
-        cadLayout = parseCadLayout(cadLayoutRaw);
-        if (!cadLayout) warnings.push("Could not generate a CAD layout preview for this proposal.");
-      } catch (error) {
-        warnings.push(`CAD layout generation failed: ${error instanceof Error ? error.message : String(error)}`);
-      }
+      const cadLayout = await generateCadLayout({ prompt, proposal, evidenceBlocks, warnings });
 
       return sendJson(res, 200, {
         kgGrounded: Boolean(subgraph),
@@ -334,6 +498,61 @@ const server = http.createServer(async (req, res) => {
     } catch (error) {
       return sendJson(res, 500, {
         error: "Design search failed",
+        detail: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  if (req.method === "POST" && req.url === "/api/design-refine") {
+    try {
+      const { prompt, previousPrompt, previousResult } = await readJson(req);
+      if (!prompt || !String(prompt).trim()) {
+        return sendJson(res, 400, { error: "prompt is required" });
+      }
+      if (!previousResult?.proposal || !previousResult?.cadLayout) {
+        return sendJson(res, 400, { error: "previousResult with proposal and cadLayout is required" });
+      }
+
+      const warnings = [...(previousResult.warnings || [])];
+      const evidenceBlocks = evidenceBlocksFromResult(previousResult);
+      const refinementPrompt = [
+        `Original design prompt: ${previousPrompt || "not recorded"}`,
+        `User follow-up refinement: ${String(prompt).slice(0, 4000)}`,
+        "",
+        `Previous proposal:\n${String(previousResult.proposal).slice(0, 8000)}`,
+        "",
+        `Previous CAD layout:\n${JSON.stringify(previousResult.cadLayout).slice(0, 4000)}`,
+        "",
+        evidenceBlocks,
+        "",
+        "Revise the proposal and CAD direction to address the user's follow-up. Keep factual claims grounded only in the evidence blocks. If the follow-up conflicts with evidence or safety constraints, say so plainly and offer a safer design adjustment."
+      ].join("\n");
+
+      const proposal = await callOllama([
+        { role: "system", content: PROPOSAL_SYSTEM_PROMPT },
+        { role: "user", content: refinementPrompt }
+      ]);
+
+      const cadLayout = await generateCadLayout({
+        prompt: `${previousPrompt || ""}\nRefinement: ${prompt}`,
+        proposal,
+        evidenceBlocks,
+        warnings
+      });
+
+      return sendJson(res, 200, {
+        ...previousResult,
+        proposal,
+        cadLayout,
+        warnings,
+        refinementHistory: [
+          ...(previousResult.refinementHistory || []),
+          { prompt: String(prompt), createdAt: new Date().toISOString() }
+        ]
+      });
+    } catch (error) {
+      return sendJson(res, 500, {
+        error: "Design refinement failed",
         detail: error instanceof Error ? error.message : String(error)
       });
     }
