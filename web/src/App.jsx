@@ -49,6 +49,7 @@ const pages = [
   { id: "knowledge", label: "Knowledge Sources", icon: BookOpen },
   { id: "new", label: "New Design", icon: Home },
   { id: "results", label: "Generated Design", icon: CheckCircle2 },
+  { id: "history", label: "History", icon: History },
   { id: "explore", label: "RAG Exploration", icon: Search },
   { id: "cad", label: "CAD Workspace", icon: Box }
 ];
@@ -143,6 +144,15 @@ function downloadTextFile(fileName, text, type = "text/plain") {
 
 function safeFileBase(name = "smart-health-design") {
   return String(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "smart-health-design";
+}
+
+function makeHistoryId() {
+  return globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function latestRefinementPrompt(result) {
+  const history = result?.refinementHistory || [];
+  return history.length ? history[history.length - 1]?.prompt : "";
 }
 
 function exportData(prompt, result) {
@@ -243,6 +253,9 @@ function App() {
   const [designPrompt, setDesignPrompt] = useState("");
   const [acceptedResult, setAcceptedResult] = useState(null);
   const [acceptedPrompt, setAcceptedPrompt] = useState("");
+  const [designHistory, setDesignHistory] = useState([]);
+  const [currentVersionId, setCurrentVersionId] = useState(null);
+  const [acceptedVersionId, setAcceptedVersionId] = useState(null);
   const ActiveIcon = pages.find((page) => page.id === active)?.icon || Activity;
   const isDesignComplete = Boolean(designResult?.cadLayout);
   const isDesignAccepted = Boolean(acceptedResult?.cadLayout);
@@ -294,17 +307,54 @@ function App() {
   }
 
   function handleTopAction(item) {
-    if (item === "Retrieval") {
-      setActive(isDesignAccepted ? "explore" : "results");
-      setTopPanel(null);
-      return;
-    }
     if (item === "History") {
-      setActive(isDesignComplete ? "results" : "new");
+      setActive("history");
       setTopPanel(null);
       return;
     }
     setTopPanel((current) => (current === item ? null : item));
+  }
+
+  function recordDesignVersion(prompt, result, kind) {
+    const id = makeHistoryId();
+    setCurrentVersionId(id);
+    setDesignHistory((current) => [
+      ...current,
+      {
+        id,
+        version: current.length + 1,
+        kind,
+        prompt,
+        refinementPrompt: latestRefinementPrompt(result),
+        result,
+        createdAt: new Date().toISOString()
+      }
+    ]);
+    return id;
+  }
+
+  function acceptCurrentDesign() {
+    setAcceptedPrompt(designPrompt);
+    setAcceptedResult(designResult);
+    setAcceptedVersionId(currentVersionId);
+    setActive("explore");
+  }
+
+  function openHistoryVersion(item) {
+    setDesignPrompt(item.prompt);
+    setDesignResult(item.result);
+    setCurrentVersionId(item.id);
+    setActive("results");
+  }
+
+  function acceptHistoryVersion(item) {
+    setDesignPrompt(item.prompt);
+    setDesignResult(item.result);
+    setCurrentVersionId(item.id);
+    setAcceptedPrompt(item.prompt);
+    setAcceptedResult(item.result);
+    setAcceptedVersionId(item.id);
+    setActive("explore");
   }
 
   if (authStatus !== "signed-in") {
@@ -317,7 +367,7 @@ function App() {
         <Logo />
         <nav className="top-actions">
           {["Retrieval", "Constraints", "Stakeholders", "History", "Export"].map((item) => (
-            <button className={topPanel === item ? "ghost active-tool" : "ghost"} key={item} onClick={() => handleTopAction(item)}>{item}</button>
+            <button className={topPanel === item || (item === "History" && active === "history") ? "ghost active-tool" : "ghost"} key={item} onClick={() => handleTopAction(item)}>{item}</button>
           ))}
         </nav>
         <button className="avatar" onClick={handleLogout}>{initials(session.user?.name)} <ChevronDown size={16} /></button>
@@ -366,6 +416,12 @@ function App() {
                 setDesignResult(result);
                 setAcceptedPrompt("");
                 setAcceptedResult(null);
+                setAcceptedVersionId(null);
+                if (result?.cadLayout) {
+                  recordDesignVersion(prompt, result, "Initial generation");
+                } else {
+                  setCurrentVersionId(null);
+                }
               }}
               onOpenResults={() => setActive("results")}
             />
@@ -379,12 +435,20 @@ function App() {
                 setDesignResult(result);
                 setAcceptedPrompt("");
                 setAcceptedResult(null);
+                setAcceptedVersionId(null);
+                recordDesignVersion(designPrompt, result, "Refinement");
               }}
-              onAccept={() => {
-                setAcceptedPrompt(designPrompt);
-                setAcceptedResult(designResult);
-                setActive("explore");
-              }}
+              onAccept={acceptCurrentDesign}
+            />
+          )}
+          {active === "history" && (
+            <HistoryPage
+              history={designHistory}
+              currentVersionId={currentVersionId}
+              acceptedVersionId={acceptedVersionId}
+              onOpenVersion={openHistoryVersion}
+              onAcceptVersion={acceptHistoryVersion}
+              onCreateNew={() => setActive("new")}
             />
           )}
           {active === "explore" && <ExplorePage prompt={acceptedPrompt} result={acceptedResult} onOpenCad={() => setActive("cad")} />}
@@ -445,6 +509,16 @@ function TopActionPanel({ panel, prompt, result, onClose }) {
           <p>This is an AI assistant. It can misjudge retrieved evidence, design trade-offs, CAD geometry, clinical relevance, and safety implications.</p>
           <div className="list-row"><Check size={16} /><span><strong>Review before use</strong><small>Generated outputs are design support, not final medical, regulatory, or engineering approval.</small></span></div>
           <div className="list-row"><Check size={16} /><span><strong>Human sign-off</strong><small>Clinical, safety, regulatory, and fabrication decisions remain subject to qualified human approval.</small></span></div>
+        </>
+      )}
+      {panel === "Retrieval" && (
+        <>
+          <h3><Search size={20} />Retrieval Grounding</h3>
+          <p>The design assistant uses retrieval-augmented generation, so it gathers relevant outside evidence before asking the LLM to propose a design.</p>
+          <div className="list-row"><Database size={16} /><span><strong>PrimeKG</strong><small>Matches the disease to a local biomedical knowledge graph, then retrieves related phenotypes, genes/proteins, and anatomy.</small></span></div>
+          <div className="list-row"><BookOpen size={16} /><span><strong>Semantic Scholar</strong><small>Searches biomedical literature for papers related to the disease, symptom, device intent, and monitoring goal.</small></span></div>
+          <div className="list-row"><ClipboardList size={16} /><span><strong>Guideline RAG</strong><small>Searches local embedded chunks from MedlinePlus, ONC SAFER Guides, and USCDI for common clinical and interoperability guidance.</small></span></div>
+          <div className="list-row"><ShieldCheck size={16} /><span><strong>Grounded generation</strong><small>The proposal is instructed to cite only retrieved graph nodes, papers, guideline excerpts, and standards references.</small></span></div>
         </>
       )}
       {panel === "Export" && (
@@ -853,6 +927,87 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
           </div>
         </div>
       </article>}
+    </div>
+  );
+}
+
+function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersion, onAcceptVersion, onCreateNew }) {
+  if (!history.length) {
+    return (
+      <div className="empty-results">
+        <History size={42} />
+        <h1>No design history yet</h1>
+        <p>Generate a design, then refine it as many times as needed. Every completed version will appear here.</p>
+        <button className="primary gate-button" onClick={onCreateNew}>Start a New Design</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="history-page">
+      <section className="generated-hero history-hero">
+        <div>
+          <span className="eyebrow">Design version history</span>
+          <h1>{history.length} generated version{history.length === 1 ? "" : "s"}</h1>
+          <p>Review earlier drafts, reopen a version for refinement, or choose the exact design that should drive RAG Exploration and the CAD Workspace.</p>
+        </div>
+        <div className="completion-card">
+          <History size={28} />
+          <strong>{acceptedVersionId ? "Accepted version selected" : "No accepted version yet"}</strong>
+          <span>{acceptedVersionId ? "RAG and CAD are using the version marked Accepted." : "Use I Like This Design here or on the generated design page."}</span>
+        </div>
+      </section>
+
+      <section className="history-list">
+        {[...history].reverse().map((item) => {
+          const layout = item.result?.cadLayout || {};
+          const components = layout.components || [];
+          const isCurrent = currentVersionId === item.id;
+          const isAccepted = acceptedVersionId === item.id;
+          return (
+            <article className={isAccepted ? "history-card accepted" : "history-card"} key={item.id}>
+              <div className="history-card-header">
+                <div>
+                  <span className="eyebrow">Version {item.version}</span>
+                  <h2>{layout.device || "Generated design"}</h2>
+                  <p>{item.kind} {item.createdAt ? `on ${new Date(item.createdAt).toLocaleString()}` : ""}</p>
+                </div>
+                <div className="history-badges">
+                  {isAccepted && <span className="chip success-chip"><Check size={13} />Accepted</span>}
+                  {isCurrent && <span className="chip">Current draft</span>}
+                  <span className="chip">{layout.formFactor || "Auto form factor"}</span>
+                </div>
+              </div>
+
+              <div className="history-summary-grid">
+                <div>
+                  <strong>Original prompt</strong>
+                  <p>{item.prompt || "No prompt recorded."}</p>
+                </div>
+                {item.refinementPrompt && (
+                  <div>
+                    <strong>Refinement prompt</strong>
+                    <p>{item.refinementPrompt}</p>
+                  </div>
+                )}
+                <div>
+                  <strong>CAD components</strong>
+                  <p>{components.length ? components.map((component) => component.type).join(", ") : "No components generated."}</p>
+                </div>
+                <div>
+                  <strong>Evidence included</strong>
+                  <p>{item.result?.literature?.length || 0} papers, {item.result?.guidelines?.length || 0} guideline hits, {item.result?.standardsReferenced?.length || 0} standards references.</p>
+                </div>
+              </div>
+
+              <div className="history-actions">
+                <button className="primary" onClick={() => onOpenVersion(item)}>Review Version</button>
+                <button className="success" onClick={() => onAcceptVersion(item)} disabled={isAccepted}>{isAccepted ? "Accepted" : "I Like This Design"}</button>
+              </div>
+            </article>
+          );
+        })}
+      </section>
     </div>
   );
 }

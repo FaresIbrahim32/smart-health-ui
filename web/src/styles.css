@@ -47,7 +47,7 @@ h1 { font-size: clamp(28px, 3vw, 42px); margin-bottom: 8px; }
 h2 { font-size: 21px; }
 h3 { color: #52b9ff; }
 p { color: var(--muted); line-height: 1.45; }
-.card, .panel, .source-card, .choice-card, .concept, .metric, .prompt-example, .composer, .cad-stage, .explain, .chat, .landing-preview, .results-gate, .generation-panel, .completion-card {
+.card, .panel, .source-card, .choice-card, .concept, .metric, .prompt-example, .composer, .cad-stage, .explain, .chat, .landing-preview, .results-gate, .generation-panel, .completion-card, .history-card {
   background: linear-gradient(180deg, rgba(10, 31, 48, .95), rgba(5, 20, 32, .95));
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -130,6 +130,21 @@ p { color: var(--muted); line-height: 1.45; }
 .completion-card svg { color: var(--green); }
 .completion-card span { color: var(--muted); }
 .empty-results { min-height: 520px; display: grid; place-items: center; align-content: center; gap: 10px; text-align: center; color: var(--muted); }
+.history-page { display: grid; gap: 14px; }
+.history-hero { padding-top: 8px; }
+.history-list { display: grid; gap: 12px; }
+.history-card { padding: 18px; }
+.history-card.accepted { border-color: rgba(65, 201, 107, .55); box-shadow: 0 0 24px rgba(65, 201, 107, .11); }
+.history-card-header { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; border-bottom: 1px solid rgba(130, 180, 215, .08); padding-bottom: 12px; margin-bottom: 14px; }
+.history-card-header h2 { margin-bottom: 4px; overflow-wrap: anywhere; }
+.history-card-header p { margin-bottom: 0; }
+.history-badges { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; min-width: 180px; }
+.success-chip { display: inline-flex; align-items: center; gap: 5px; border-color: rgba(65, 201, 107, .5); background: rgba(65, 201, 107, .13); color: #c8ffd8; }
+.history-summary-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.history-summary-grid div { border: 1px solid rgba(72, 140, 190, .16); border-radius: 8px; padding: 12px; background: rgba(3, 16, 26, .36); }
+.history-summary-grid strong { display: block; margin-bottom: 5px; color: #dce7f1; }
+.history-summary-grid p { margin: 0; overflow-wrap: anywhere; }
+.history-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
 .refine-panel { grid-column: 1 / -1; }
 .refine-form { display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: 12px; align-items: end; }
 .refine-form textarea { width: 100%; min-width: 0; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 12px 13px; background: rgba(3, 16, 26, .72); color: var(--text); font: inherit; line-height: 1.4; outline: 0; }
@@ -216,6 +231,7 @@ p { color: var(--muted); line-height: 1.45; }
 .primary { width: 100%; background: #0d58ea; font-weight: 750; }
 .primary.auth-button, .gate-button { width: auto; }
 .success { background: #109244; border-color: rgba(55, 211, 117, .6); }
+.success:disabled { opacity: .55; cursor: not-allowed; }
 .cad-stage { min-height: 780px; position: relative; overflow: hidden; background-color: #091a26; background-image: linear-gradient(rgba(99,155,190,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(99,155,190,.08) 1px, transparent 1px); background-size: 22px 22px; }
 .stl-viewer { display: flex; flex-direction: column; height: 100%; }
 .generated-cad-stage { display: flex; flex-direction: column; min-height: 780px; height: 100%; }
@@ -277,7 +293,9 @@ p { color: var(--muted); line-height: 1.45; }
   .landing-nav { align-items: flex-start; }
   .landing-hero { min-height: auto; padding-top: 44px; grid-template-columns: 1fr; }
   .landing-actions { justify-content: flex-end; }
-  .generation-steps, .proposal-sections, .summary-points, .evidence-options, .common-info-grid { grid-template-columns: 1fr; }
+  .generation-steps, .proposal-sections, .summary-points, .evidence-options, .common-info-grid, .history-summary-grid, .history-actions { grid-template-columns: 1fr; }
+  .history-card-header { display: grid; }
+  .history-badges { justify-content: flex-start; min-width: 0; }
   .results-gate { align-items: stretch; flex-direction: column; }
   .refine-form { grid-template-columns: 1fr; }
   .gate-button { width: 100%; }
