@@ -30,6 +30,7 @@ import {
   Microscope,
   Moon,
   PackageCheck,
+  Palette,
   PenTool,
   RefreshCw,
   Search,
@@ -122,9 +123,35 @@ const pipelineEvidence = [
   ["Guideline retrieval", "MedlinePlus, ONC SAFER Guides, and USCDI chunks are embedded locally."]
 ];
 
+const promptAudiences = [
+  {
+    id: "common",
+    label: "Everyday user",
+    icon: UserRound,
+    description: "Plain wording is converted into an engineering search prompt."
+  },
+  {
+    id: "engineer",
+    label: "Engineer",
+    icon: Wrench,
+    description: "Technical prompts stay specific for device and CAD exploration."
+  },
+  {
+    id: "doctor",
+    label: "Doctor",
+    icon: HeartPulse,
+    description: "Clinical needs are translated into measurable design signals."
+  }
+];
+
 const AUTH_STORAGE_KEY = "smart-health-session";
 const THEME_STORAGE_KEY = "smart-health-theme";
-const DESIGN_REQUEST_TIMEOUT_MS = 360000;
+const THEMES = ["navy", "dark", "light"];
+const THEME_LABEL = {
+  navy: "Navy",
+  dark: "Black",
+  light: "Light"
+};
 
 async function authRequest(path, body, token) {
   const response = await fetch(`http://127.0.0.1:3001${path}`, {
@@ -154,9 +181,6 @@ function downloadTextFile(fileName, text, type = "text/plain") {
 }
 
 function requestErrorMessage(err, fallback) {
-  if (err?.name === "TimeoutError" || err?.name === "AbortError") {
-    return "Generation timed out. Ollama or one of the retrieval services is taking too long; retry with a shorter prompt or restart the local dev server.";
-  }
   return err instanceof Error ? err.message : fallback;
 }
 
@@ -192,9 +216,16 @@ function latestRefinementPrompt(result) {
   return history.length ? history[history.length - 1]?.prompt : "";
 }
 
+function latestRefinementProfile(result) {
+  const history = result?.refinementHistory || [];
+  return history.length ? history[history.length - 1]?.promptProfile : null;
+}
+
 function exportData(prompt, result) {
   return {
     prompt,
+    promptProfile: result.promptProfile || null,
+    latestRefinementProfile: result.latestRefinementProfile || latestRefinementProfile(result),
     extraction: result.extraction,
     commonUserInfo: commonUserInfo(result),
     definitions: {
@@ -221,6 +252,12 @@ function exportMarkdown(prompt, result) {
     "",
     "## Prompt",
     prompt || "No prompt recorded.",
+    "",
+    "## Prompt Mode",
+    `- Author: ${data.promptProfile?.roleLabel || "Not recorded"}`,
+    `- Engineering retrieval prompt: ${data.promptProfile?.engineeringPrompt || prompt || "Not recorded"}`,
+    data.latestRefinementProfile ? `- Latest refinement author: ${data.latestRefinementProfile.roleLabel || "Not recorded"}` : "",
+    data.latestRefinementProfile?.engineeringPrompt ? `- Latest engineering refinement: ${data.latestRefinementProfile.engineeringPrompt}` : "",
     "",
     "## Extracted Definitions",
     `- Disease: ${data.definitions.disease?.name || data.extraction?.disease || "not detected"}`,
@@ -298,11 +335,11 @@ function App() {
   const [theme, setTheme] = useState(() => {
     try {
       const saved = localStorage.getItem(THEME_STORAGE_KEY);
-      if (["light", "dark"].includes(saved)) return saved;
+      if (THEMES.includes(saved)) return saved;
     } catch {
-      // Fall back to dark if browser storage is unavailable.
+      // Fall back to the original navy theme if browser storage is unavailable.
     }
-    return globalThis.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "light" : "dark";
+    return "navy";
   });
   const ActiveIcon = pages.find((page) => page.id === active)?.icon || Activity;
   const isDesignComplete = Boolean(designResult?.cadLayout);
@@ -383,6 +420,7 @@ function App() {
         kind,
         prompt,
         refinementPrompt: latestRefinementPrompt(result),
+        refinementProfile: latestRefinementProfile(result),
         result,
         createdAt: new Date().toISOString()
       }
@@ -430,9 +468,13 @@ function App() {
             <button className={topPanel === item || (item === "History" && active === "history") ? "ghost active-tool" : "ghost"} key={item} onClick={() => handleTopAction(item)}>{item}</button>
           ))}
         </nav>
-        <button className="theme-toggle" onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
-          {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
-          <span>{theme === "dark" ? "Light" : "Dark"}</span>
+        <button
+          className="theme-toggle"
+          onClick={() => setTheme((current) => THEMES[(THEMES.indexOf(current) + 1) % THEMES.length])}
+          aria-label={`Current theme: ${THEME_LABEL[theme]}. Switch theme.`}
+        >
+          {theme === "light" ? <Sun size={17} /> : theme === "dark" ? <Moon size={17} /> : <Palette size={17} />}
+          <span>{THEME_LABEL[theme]}</span>
         </button>
         <button className="avatar" onClick={handleLogout}>{initials(session.user?.name)} <ChevronDown size={16} /></button>
         {topPanel && (
@@ -750,9 +792,11 @@ function KnowledgePage() {
 
 function NewDesignPage({ result, onResult, onOpenResults }) {
   const [prompt, setPrompt] = useState("");
+  const [promptAudience, setPromptAudience] = useState("common");
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState(null);
   const isComplete = Boolean(result?.cadLayout);
+  const activeAudience = promptAudiences.find((item) => item.id === promptAudience) || promptAudiences[0];
 
   async function runDesignSearch(event) {
     event.preventDefault();
@@ -767,8 +811,7 @@ function NewDesignPage({ result, onResult, onOpenResults }) {
       const response = await fetch("http://127.0.0.1:3001/api/design-search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(DESIGN_REQUEST_TIMEOUT_MS),
-        body: JSON.stringify({ prompt: trimmed })
+        body: JSON.stringify({ prompt: trimmed, audience: promptAudience })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || data.error || "Design search failed");
@@ -792,15 +835,30 @@ function NewDesignPage({ result, onResult, onOpenResults }) {
           <button className="choice-card" key={title}><Icon size={48} /><span>{title}</span><p>{title === "CAD Design" ? "Evidence-backed hardware concept and downloadable STL." : title === "Mobile App Design" ? "Companion workflows, monitoring screens, and data needs." : "Coordinate physical device and digital experience."}</p><i /></button>
         ))}
       </div>
-      <h2>2. Describe your design goal</h2>
-      <div className="prompt-example"><Sparkles size={24} /><div><strong>Example Prompt</strong><p>"Design a non-invasive wearable system for continuously monitoring shortness of breath in patients with Cystic Fibrosis."</p></div></div>
+      <h2>2. Who is writing the prompt?</h2>
+      <div className="role-select-grid">
+        {promptAudiences.map(({ id, label, icon: Icon, description }) => (
+          <button
+            type="button"
+            className={promptAudience === id ? "role-card active" : "role-card"}
+            key={id}
+            onClick={() => setPromptAudience(id)}
+          >
+            <Icon size={24} />
+            <span>{label}</span>
+            <small>{description}</small>
+          </button>
+        ))}
+      </div>
+      <h2>3. Describe your design goal</h2>
+      <div className="prompt-example"><Sparkles size={24} /><div><strong>{activeAudience.label} prompt mode</strong><p>{activeAudience.description}</p></div></div>
       <form className="composer" onSubmit={runDesignSearch}>
         <MessageSquare size={32} />
         <textarea
           aria-label="Describe your design goal"
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
-          placeholder="Describe a smart health product concept for a target user group and condition..."
+          placeholder={promptAudience === "common" ? "Example: I want something that helps someone with cystic fibrosis notice breathing trouble earlier..." : promptAudience === "doctor" ? "Example: Need a patient-friendly way to monitor dyspnea and oxygenation trends in cystic fibrosis..." : "Example: Design a non-invasive wearable system for continuously monitoring shortness of breath in patients with cystic fibrosis..."}
           rows={2}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) runDesignSearch(event);
@@ -844,9 +902,11 @@ function GenerationSteps() {
 
 function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
   const [audience, setAudience] = useState("common");
+  const [refineAudience, setRefineAudience] = useState(result?.promptProfile?.role || "common");
   const [refinement, setRefinement] = useState("");
   const [refineStatus, setRefineStatus] = useState("idle");
   const [refineError, setRefineError] = useState(null);
+  const activeRefineAudience = promptAudiences.find((item) => item.id === refineAudience) || promptAudiences[0];
 
   if (!result?.cadLayout) {
     return (
@@ -872,8 +932,7 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
       const response = await fetch("http://127.0.0.1:3001/api/design-refine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(DESIGN_REQUEST_TIMEOUT_MS),
-        body: JSON.stringify({ prompt: trimmed, previousPrompt: prompt, previousResult: result })
+        body: JSON.stringify({ prompt: trimmed, audience: refineAudience, previousPrompt: prompt, previousResult: result })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || data.error || "Design refinement failed");
@@ -892,8 +951,17 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
         <div>
           <span className="eyebrow">Generated architecture package</span>
           <h1>{result.cadLayout.device}</h1>
-          <div className="chip-row"><span className="chip">{result.cadLayout.formFactor || "auto-selected form factor"}</span></div>
+          <div className="chip-row">
+            <span className="chip">{result.promptProfile?.roleLabel || "Prompt author"}</span>
+            <span className="chip">{result.cadLayout.formFactor || "auto-selected form factor"}</span>
+          </div>
           <p>{prompt}</p>
+          {result.promptProfile?.engineeringPrompt && result.promptProfile.engineeringPrompt !== prompt && (
+            <div className="engineering-prompt-note">
+              <strong>Engineering retrieval prompt</strong>
+              <span>{result.promptProfile.engineeringPrompt}</span>
+            </div>
+          )}
         </div>
         <div className="completion-card">
           <CheckCircle2 size={28} />
@@ -904,12 +972,25 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
 
       <article className="panel refine-panel">
         <h3><MessageSquare size={20} />Refine This Design</h3>
+        <div className="refine-depth-row" role="group" aria-label="Refinement prompt mode">
+          {promptAudiences.map(({ id, label, icon: Icon }) => (
+            <button
+              type="button"
+              className={refineAudience === id ? "active" : ""}
+              key={id}
+              onClick={() => setRefineAudience(id)}
+            >
+              <Icon size={16} />{label}
+            </button>
+          ))}
+        </div>
+        <p className="refine-depth-note">{activeRefineAudience.description}</p>
         <form className="refine-form" onSubmit={submitRefinement}>
           <textarea
             aria-label="Describe how to improve the generated design"
             value={refinement}
             onChange={(event) => setRefinement(event.target.value)}
-            placeholder="Example: make it less bulky, focus on diabetes-friendly glucose alerts, add a caregiver notification component..."
+            placeholder={refineAudience === "common" ? "Example: make it smaller and easier to wear every day..." : refineAudience === "doctor" ? "Example: prioritize dyspnea trend review, oxygenation context, and patient safety alerts..." : "Example: reduce enclosure volume, switch to a patch form factor, and separate sensor, battery, and radio modules..."}
             rows={3}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) submitRefinement(event);
@@ -923,6 +1004,8 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
       </article>
 
       <AudienceToggle value={audience} onChange={setAudience} />
+
+      <ArchitectureCadPanel layout={result.cadLayout} />
 
       {audience === "common" && <CommonResults prompt={prompt} result={result} />}
 
@@ -1052,6 +1135,9 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
                   <div>
                     <strong>Refinement prompt</strong>
                     <p>{item.refinementPrompt}</p>
+                    {item.refinementProfile?.engineeringPrompt && item.refinementProfile.engineeringPrompt !== item.refinementPrompt && (
+                      <small>Engineering refinement: {item.refinementProfile.engineeringPrompt}</small>
+                    )}
                   </div>
                 )}
                 <div>
@@ -1369,6 +1455,56 @@ function FormattedProposal({ text }) {
   );
 }
 
+function ArchitectureCadPanel({ layout }) {
+  const assembly = useMemo(() => buildAssembly(layout), [layout]);
+  const dimensionText = formatDimensions(layout.dimensions);
+  const evidenceParts = assembly.parts.slice(0, 8);
+
+  function downloadStl() {
+    downloadCadStl(layout);
+  }
+
+  return (
+    <article className="panel architecture-cad-panel">
+      <div className="architecture-cad-main">
+        <div className="architecture-cad-preview" aria-label="Generated CAD design preview">
+          <Canvas camera={{ position: [3.5, 2.5, 3.5], fov: 45 }}>
+            <ambientLight intensity={0.6} />
+            <directionalLight position={[4, 5, 4]} intensity={1} />
+            <gridHelper args={[6, 12, "#1463ff", "#0a1f30"]} />
+            {assembly.parts.map((part) => <CadPartMesh key={part.id} part={part} />)}
+            <OrbitControls />
+          </Canvas>
+        </div>
+        <div className="architecture-cad-copy">
+          <span className="eyebrow">CAD design concept</span>
+          <h3><Box size={20} />{layout.device}</h3>
+          <div className="chip-row">
+            <span className="chip">{layout.formFactor || "auto-selected form factor"}</span>
+            {dimensionText && <span className="chip">{dimensionText}</span>}
+            <span className="chip">{assembly.parts.length} generated layers</span>
+          </div>
+          <p>{layout.caveat || "Illustrative concept geometry for review, not manufacturing specifications."}</p>
+          <button className="primary download-inline" onClick={downloadStl}><Download size={16} />Download STL</button>
+        </div>
+      </div>
+      <div className="architecture-cad-evidence">
+        <h4>Generated layers and evidence</h4>
+        {evidenceParts.map((part) => (
+          <div className="architecture-layer-row" key={part.id}>
+            <Check size={16} />
+            <span>
+              <strong>{part.type}</strong>
+              <small>{[part.material, part.placement].filter(Boolean).join(" - ") || "Generated CAD layer"}</small>
+              <small>{part.groundedIn}</small>
+            </span>
+          </div>
+        ))}
+      </div>
+    </article>
+  );
+}
+
 function CadPartMesh({ part }) {
   const geometry = useMemo(() => geom3ToBufferGeometry(part.geom3), [part.geom3]);
   return (
@@ -1490,6 +1626,8 @@ function ExplorePage({ prompt, result, onOpenCad }) {
       <section className="explore-overview-grid">
         <Panel title="Knowledge Sources (RAG)" icon={Search} items={["PrimeKG knowledge graph", "Semantic Scholar papers", "MedlinePlus health topics", "ONC SAFER Guides", "USCDI data classes", "Named standards references"]} />
         <Panel title="Extracted Prompt" icon={SlidersHorizontal} items={[
+          `Prompt mode: ${result.promptProfile?.roleLabel || "Not recorded"}`,
+          `Engineering search: ${result.promptProfile?.engineeringPrompt || prompt || "not recorded"}`,
           `Disease: ${result.extraction?.disease || "not detected"}`,
           `Symptom: ${result.extraction?.symptomPhrase || "not detected"}`,
           `Device intent: ${result.extraction?.deviceIntent || "not detected"}`

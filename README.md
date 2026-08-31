@@ -5,7 +5,7 @@ This project includes two implementations of the Smart Health by Design UI:
 - `web/` - Vite + React web app
 - `mobile/` - Expo + React Native mobile app
 
-The `web/` app is now the main working prototype. It includes local account auth, an evidence-grounded design-search pipeline, iterative design refinement, audience-specific result views, dynamic RAG/CAD pages, export tools, shadcn-style light/dark theming, and real STL/CAD preview support. The `mobile/` app remains the original Expo UI sample.
+The `web/` app is now the main working prototype. It includes local account auth, an evidence-grounded design-search pipeline, iterative design refinement, audience-specific result views, dynamic RAG/CAD pages, export tools, shadcn-style multi-theme UI, and real STL/CAD preview support. The `mobile/` app remains the original Expo UI sample.
 
 ## Latest web workflow
 
@@ -17,7 +17,7 @@ The `web/` app is now the main working prototype. It includes local account auth
 6. **RAG Exploration + CAD Workspace** - after acceptance, these pages render the accepted design's actual evidence, layers, components, and CAD rationale instead of static sample content.
 7. **Export** - the top nav export panel can share/download a Markdown report, JSON data package, and generated STL. The export includes cited papers, definitions, phenotypes, genes/proteins, anatomy, clinical guidance, standards references, proposal text, warnings, and CAD details.
 
-The web UI uses shadcn-inspired design tokens with a persisted dark/light theme toggle in the top bar.
+The web UI uses shadcn-inspired design tokens with a persisted three-theme toggle in the top bar: blue navy, black dark, and light.
 
 ## Result views
 

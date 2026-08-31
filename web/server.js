@@ -22,7 +22,6 @@ try {
 const PORT = Number(process.env.SMART_HEALTH_API_PORT || 3001);
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2:latest";
-const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 240000);
 const DATA_DIR = path.join(__dirname, "data");
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
@@ -158,7 +157,6 @@ async function callOllama(messages, { format } = {}) {
   const ollamaRes = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
     body: JSON.stringify({
       model: OLLAMA_MODEL,
       stream: false,
@@ -184,6 +182,24 @@ Respond with ONLY a JSON object, no prose, no markdown fences, matching exactly:
 - "symptomPhrase": the specific symptom or complaint phrase mentioned (e.g. "shortness of breath"), or null if none.
 - "deviceIntent": a short phrase describing the kind of device/monitoring/product mentioned (e.g. "wearable breathing monitor"), or null if none.`;
 
+const PROMPT_ROLE_LABELS = {
+  common: "Everyday user",
+  engineer: "Engineer",
+  doctor: "Doctor or clinician"
+};
+
+const ENGINEERING_PROMPT_SYSTEM_PROMPT = `Rewrite a health product request into an engineering-ready retrieval prompt for biomedical device ideation.
+Respond with ONLY a JSON object, no prose, no markdown fences, matching exactly:
+{"engineeringPrompt": string, "plainSummary": string}
+
+Rules:
+- Preserve the user's disease, symptom, patient group, setting, and constraints.
+- If the user is an everyday user, translate plain language into a concrete biomedical design objective without adding a diagnosis or unsupported clinical claim.
+- If the user is a doctor or clinician, translate clinical language into a device-engineering objective with measurable signals, candidate sensing modality, workflow, and patient safety context.
+- If the user is an engineer, lightly normalize the request but keep the technical intent intact.
+- The engineeringPrompt should be one concise sentence that can drive PrimeKG, Semantic Scholar, guideline retrieval, proposal generation, and CAD form-factor selection.
+- Do not invent exact citations, evidence markers, standards, or device performance claims.`;
+
 function parseExtraction(raw) {
   try {
     const cleaned = raw.trim().replace(/^```json\s*|```$/g, "");
@@ -195,6 +211,95 @@ function parseExtraction(raw) {
     };
   } catch {
     return { disease: null, symptomPhrase: null, deviceIntent: null };
+  }
+}
+
+function parseEngineeringPrompt(raw, fallback) {
+  try {
+    const cleaned = raw.trim().replace(/^```json\s*|```$/g, "");
+    const parsed = JSON.parse(cleaned);
+    const engineeringPrompt = String(parsed.engineeringPrompt || "").trim();
+    const plainSummary = String(parsed.plainSummary || "").trim();
+    if (!engineeringPrompt) throw new Error("Missing engineeringPrompt");
+    return {
+      engineeringPrompt,
+      plainSummary: plainSummary || "Converted into an engineering-ready retrieval prompt."
+    };
+  } catch {
+    return {
+      engineeringPrompt: fallback,
+      plainSummary: "Used the original wording as the engineering retrieval prompt."
+    };
+  }
+}
+
+async function normalizePromptForRole(prompt, role, warnings) {
+  const normalizedRole = Object.hasOwn(PROMPT_ROLE_LABELS, role) ? role : "common";
+  try {
+    const raw = await callOllama(
+      [
+        { role: "system", content: ENGINEERING_PROMPT_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: `Prompt author: ${PROMPT_ROLE_LABELS[normalizedRole]}\nOriginal request: ${String(prompt).slice(0, 4000)}`
+        }
+      ],
+      { format: "json" }
+    );
+    const normalized = parseEngineeringPrompt(raw, String(prompt).trim());
+    return {
+      role: normalizedRole,
+      roleLabel: PROMPT_ROLE_LABELS[normalizedRole],
+      originalPrompt: String(prompt).trim(),
+      ...normalized
+    };
+  } catch (error) {
+    warnings.push(`Prompt normalization failed: ${error instanceof Error ? error.message : String(error)}`);
+    return {
+      role: normalizedRole,
+      roleLabel: PROMPT_ROLE_LABELS[normalizedRole],
+      originalPrompt: String(prompt).trim(),
+      engineeringPrompt: String(prompt).trim(),
+      plainSummary: "Used the original wording because prompt normalization failed."
+    };
+  }
+}
+
+async function normalizeRefinementForRole(prompt, role, previousResult, warnings) {
+  const normalizedRole = Object.hasOwn(PROMPT_ROLE_LABELS, role) ? role : previousResult?.promptProfile?.role || "common";
+  try {
+    const raw = await callOllama(
+      [
+        { role: "system", content: ENGINEERING_PROMPT_SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: [
+            `Prompt author: ${PROMPT_ROLE_LABELS[normalizedRole]}`,
+            `Existing engineering prompt: ${previousResult?.promptProfile?.engineeringPrompt || "not recorded"}`,
+            `Existing device concept: ${previousResult?.cadLayout?.device || "not recorded"}`,
+            `Original refinement request: ${String(prompt).slice(0, 4000)}`,
+            "Rewrite this follow-up as an engineering-ready design refinement. Preserve that it is a refinement of the existing device, not a brand-new request."
+          ].join("\n")
+        }
+      ],
+      { format: "json" }
+    );
+    const normalized = parseEngineeringPrompt(raw, String(prompt).trim());
+    return {
+      role: normalizedRole,
+      roleLabel: PROMPT_ROLE_LABELS[normalizedRole],
+      originalPrompt: String(prompt).trim(),
+      ...normalized
+    };
+  } catch (error) {
+    warnings.push(`Refinement normalization failed: ${error instanceof Error ? error.message : String(error)}`);
+    return {
+      role: normalizedRole,
+      roleLabel: PROMPT_ROLE_LABELS[normalizedRole],
+      originalPrompt: String(prompt).trim(),
+      engineeringPrompt: String(prompt).trim(),
+      plainSummary: "Used the original refinement wording because normalization failed."
+    };
   }
 }
 
@@ -345,7 +450,6 @@ function buildCadqueryStl(layout) {
     const run = spawnSync("python3", [scriptPath, outputPath], {
       input: JSON.stringify(layout),
       encoding: "utf8",
-      timeout: 45000,
       maxBuffer: 1024 * 1024 * 8
     });
     if (run.status !== 0) {
@@ -471,17 +575,19 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && req.url === "/api/design-search") {
     try {
-      const { prompt } = await readJson(req);
+      const { prompt, audience } = await readJson(req);
       if (!prompt || !String(prompt).trim()) {
         return sendJson(res, 400, { error: "prompt is required" });
       }
 
       const warnings = [];
+      const promptProfile = await normalizePromptForRole(prompt, audience, warnings);
+      const retrievalPrompt = promptProfile.engineeringPrompt || String(prompt).trim();
 
       const extractionRaw = await callOllama(
         [
           { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
-          { role: "user", content: String(prompt).slice(0, 4000) }
+          { role: "user", content: retrievalPrompt.slice(0, 4000) }
         ],
         { format: "json" }
       );
@@ -545,7 +651,7 @@ const server = http.createServer(async (req, res) => {
       let guidelineHits = [];
       if (guidelines.isAvailable()) {
         try {
-          const guidelineQuery = [diseaseQueryName, extraction.symptomPhrase, extraction.deviceIntent].filter(Boolean).join(" ") || prompt;
+          const guidelineQuery = [diseaseQueryName, extraction.symptomPhrase, extraction.deviceIntent].filter(Boolean).join(" ") || retrievalPrompt;
           guidelineHits = await guidelines.searchGuidelines(guidelineQuery, 5);
         } catch (error) {
           warnings.push(`Guideline search failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -564,13 +670,14 @@ const server = http.createServer(async (req, res) => {
 
       const proposal = await callOllama([
         { role: "system", content: PROPOSAL_SYSTEM_PROMPT },
-        { role: "user", content: `Original design prompt: ${prompt}\n\n${evidenceBlocks}` }
+        { role: "user", content: `Original user prompt: ${promptProfile.originalPrompt}\nPrompt author: ${promptProfile.roleLabel}\nEngineering retrieval prompt: ${retrievalPrompt}\n\n${evidenceBlocks}` }
       ]);
 
-      const cadLayout = await generateCadLayout({ prompt, proposal, evidenceBlocks, warnings });
+      const cadLayout = await generateCadLayout({ prompt: retrievalPrompt, proposal, evidenceBlocks, warnings });
 
       return sendJson(res, 200, {
         kgGrounded: Boolean(subgraph),
+        promptProfile,
         extraction,
         subgraph,
         literature: papers,
@@ -590,7 +697,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "POST" && req.url === "/api/design-refine") {
     try {
-      const { prompt, previousPrompt, previousResult } = await readJson(req);
+      const { prompt, previousPrompt, previousResult, audience } = await readJson(req);
       if (!prompt || !String(prompt).trim()) {
         return sendJson(res, 400, { error: "prompt is required" });
       }
@@ -599,10 +706,13 @@ const server = http.createServer(async (req, res) => {
       }
 
       const warnings = [...(previousResult.warnings || [])];
+      const refinementProfile = await normalizeRefinementForRole(prompt, audience, previousResult, warnings);
       const evidenceBlocks = evidenceBlocksFromResult(previousResult);
       const refinementPrompt = [
         `Original design prompt: ${previousPrompt || "not recorded"}`,
-        `User follow-up refinement: ${String(prompt).slice(0, 4000)}`,
+        `Refinement author: ${refinementProfile.roleLabel}`,
+        `User follow-up refinement: ${refinementProfile.originalPrompt}`,
+        `Engineering refinement prompt: ${refinementProfile.engineeringPrompt}`,
         "",
         `Previous proposal:\n${String(previousResult.proposal).slice(0, 8000)}`,
         "",
@@ -619,7 +729,7 @@ const server = http.createServer(async (req, res) => {
       ]);
 
       const cadLayout = await generateCadLayout({
-        prompt: `${previousPrompt || ""}\nRefinement: ${prompt}`,
+        prompt: `${previousResult.promptProfile?.engineeringPrompt || previousPrompt || ""}\nRefinement: ${refinementProfile.engineeringPrompt}`,
         proposal,
         evidenceBlocks,
         warnings
@@ -630,9 +740,14 @@ const server = http.createServer(async (req, res) => {
         proposal,
         cadLayout,
         warnings,
+        latestRefinementProfile: refinementProfile,
         refinementHistory: [
           ...(previousResult.refinementHistory || []),
-          { prompt: String(prompt), createdAt: new Date().toISOString() }
+          {
+            prompt: String(prompt),
+            promptProfile: refinementProfile,
+            createdAt: new Date().toISOString()
+          }
         ]
       });
     } catch (error) {
