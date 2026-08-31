@@ -3,6 +3,7 @@ const BASE_URL = "https://api.semanticscholar.org/graph/v1/paper/search";
 // and retrying once on 429 absorbs the burst rejections observed in practice.
 const MIN_INTERVAL_MS = 1500;
 const RETRY_BACKOFF_MS = 3000;
+const SEARCH_TIMEOUT_MS = Number(process.env.S2_TIMEOUT_MS || 30000);
 
 let lastCallAt = 0;
 
@@ -13,7 +14,7 @@ async function throttle() {
 }
 
 async function fetchOnce(url, headers) {
-  const response = await fetch(url, { headers });
+  const response = await fetch(url, { headers, signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) });
   if (!response.ok) {
     const text = await response.text();
     const error = new Error(`Semantic Scholar request failed (${response.status}): ${text}`);

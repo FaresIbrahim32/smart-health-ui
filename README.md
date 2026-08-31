@@ -5,36 +5,47 @@ This project includes two implementations of the Smart Health by Design UI:
 - `web/` - Vite + React web app
 - `mobile/` - Expo + React Native mobile app
 
-The `web/` app is now the main working prototype. It includes local account auth, an evidence-grounded design-search pipeline, iterative design refinement, audience-specific result views, dynamic RAG/CAD pages, export tools, and real STL/CAD preview support. The `mobile/` app remains the original Expo UI sample.
+The `web/` app is now the main working prototype. It includes local account auth, an evidence-grounded design-search pipeline, iterative design refinement, audience-specific result views, dynamic RAG/CAD pages, export tools, shadcn-style light/dark theming, and real STL/CAD preview support. The `mobile/` app remains the original Expo UI sample.
 
 ## Latest web workflow
 
 1. **Landing + account flow** - users start on a landing page with sign up / log in. Accounts are stored locally in `web/data/auth.sqlite` with salted PBKDF2 password hashes; browser sessions are restored with a local session token.
 2. **New Design** - users enter a clinical/product design prompt. The app retrieves biomedical evidence, generates a proposal, and creates a CAD component layout.
-3. **Generated Design** - the generated output appears on a separate results page only after retrieval, reasoning, and CAD layout generation finish.
+3. **Architecture** - the generated output appears on a separate architecture page only after retrieval, reasoning, and CAD layout generation finish.
 4. **Iterative refinement** - if the user does not like the design, they can submit follow-up prompts such as "make it less bulky" or "adapt this for diabetes caregiver alerts." The backend sends the previous proposal, CAD layout, and retrieved evidence back to the LLM for revision.
 5. **Accept design** - RAG Exploration and CAD Workspace stay locked until the user accepts a generated draft with **I Like This Design**.
 6. **RAG Exploration + CAD Workspace** - after acceptance, these pages render the accepted design's actual evidence, layers, components, and CAD rationale instead of static sample content.
 7. **Export** - the top nav export panel can share/download a Markdown report, JSON data package, and generated STL. The export includes cited papers, definitions, phenotypes, genes/proteins, anatomy, clinical guidance, standards references, proposal text, warnings, and CAD details.
 
+The web UI uses shadcn-inspired design tokens with a persisted dark/light theme toggle in the top bar.
+
 ## Result views
 
-The Generated Design page supports two user modes:
+The Architecture page supports two user modes:
 
 - **Common user** - shows the final CAD concept, a plain-language summary, common disease/terminology explanations, expandable clinical guidance, and a human-review note. Detailed biomedical evidence is hidden by default.
 - **Professional** - reveals the full technical proposal, PrimeKG grounding, cited papers, definitions, genes/proteins, phenotypes/anatomy, clinical guidance, standards references, and similar/previous solutions. Long text is rendered in expandable rows with source links preserved.
 
 ## CAD behavior
 
-Generated CAD previews are no longer forced into a bracelet shape. The backend asks the LLM for a broad `formFactor`, and the deterministic JSCAD renderer supports:
+Generated CAD previews are no longer forced into a bracelet shape. The backend asks the LLM for a broad `formFactor`, approximate dimensions, component placement hints, and evidence-linked parts. The browser still uses deterministic JSCAD for the live preview, while STL downloads first try the stronger optional CadQuery backend generator and fall back to JSCAD if CadQuery is not installed.
 
 - `wristband`
 - `mouthguard`
 - `cast`
 - `patch`
 - `handheld`
+- `clip-on`
 
 The CAD Workspace can also upload and inspect arbitrary `.stl` files with a Three.js STL viewer.
+
+To enable stronger CadQuery STL exports:
+
+```bash
+cd web
+python3 -m pip install -r requirements-cadquery.txt
+pnpm dev
+```
 
 ## New Design page: the design-search pipeline
 
@@ -47,7 +58,7 @@ Submitting a prompt on the New Design page (e.g. *"Design a non-invasive wearabl
 5. **Clinical & regulatory guidance** - a local RAG layer over MedlinePlus health topics, ONC SAFER Guides, and USCDI data classes (embedded once with Ollama's `nomic-embed-text`, retrieved by cosine similarity) surfaces relevant guideline excerpts. AAMI/IEEE/ISO/ASME standards are copyrighted, so they're only ever surfaced as a static named-reference list ("verify against ISO 14971...") - their text is never fetched or stored.
 6. **Grounded proposal** - a final Ollama call reasons only over the retrieved subgraph, papers, and guideline excerpts, explicitly maps user-mentioned symptoms to graph phenotypes (or says plainly when there's no direct edge), and produces a reasoning-only wearable/monitoring proposal.
 
-The design-search result is used by the Generated Design, RAG Exploration, CAD Workspace, and Export flows.
+The design-search result is used by the Architecture, RAG Exploration, CAD Workspace, and Export flows.
 
 ## Iterative refinement API
 

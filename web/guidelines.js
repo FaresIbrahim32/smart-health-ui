@@ -7,6 +7,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const dbPath = path.join(__dirname, "data", "guidelines.sqlite");
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
 const EMBED_MODEL = "nomic-embed-text";
+const EMBED_TIMEOUT_MS = Number(process.env.EMBED_TIMEOUT_MS || 45000);
 
 let chunks = null; // [{ source, title, url, text, vector: Float32Array }]
 
@@ -37,6 +38,7 @@ async function embedQuery(text) {
   const res = await fetch(`${OLLAMA_URL}/api/embed`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
     body: JSON.stringify({ model: EMBED_MODEL, input: text })
   });
   if (!res.ok) throw new Error(`Embed request failed: ${await res.text()}`);

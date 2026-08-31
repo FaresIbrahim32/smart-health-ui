@@ -3,26 +3,32 @@ import { createRoot } from "react-dom/client";
 import {
   Activity,
   BarChart3,
+  Battery,
   BookOpen,
   Box,
   Brain,
   Check,
   CheckCircle2,
   ChevronDown,
+  CircuitBoard,
   ClipboardList,
   CloudUpload,
   Cpu,
   Database,
   Download,
+  Droplets,
   Eye,
   FileText,
   Gauge,
+  HeartPulse,
   History,
   Home,
   Layers,
   LogIn,
+  Menu,
   MessageSquare,
   Microscope,
+  Moon,
   PackageCheck,
   PenTool,
   RefreshCw,
@@ -32,10 +38,13 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  Sun,
+  Thermometer,
   UserPlus,
   UserRound,
   UsersRound,
   Wrench,
+  Zap,
   X
 } from "lucide-react";
 import { Canvas } from "@react-three/fiber";
@@ -48,7 +57,7 @@ const pages = [
   { id: "pipeline", label: "Pipeline", icon: Activity },
   { id: "knowledge", label: "Knowledge Sources", icon: BookOpen },
   { id: "new", label: "New Design", icon: Home },
-  { id: "results", label: "Generated Design", icon: CheckCircle2 },
+  { id: "results", label: "Architecture", icon: CheckCircle2 },
   { id: "history", label: "History", icon: History },
   { id: "explore", label: "RAG Exploration", icon: Search },
   { id: "cad", label: "CAD Workspace", icon: Box }
@@ -114,6 +123,8 @@ const pipelineEvidence = [
 ];
 
 const AUTH_STORAGE_KEY = "smart-health-session";
+const THEME_STORAGE_KEY = "smart-health-theme";
+const DESIGN_REQUEST_TIMEOUT_MS = 360000;
 
 async function authRequest(path, body, token) {
   const response = await fetch(`http://127.0.0.1:3001${path}`, {
@@ -140,6 +151,32 @@ function downloadBlob(blob, fileName) {
 
 function downloadTextFile(fileName, text, type = "text/plain") {
   downloadBlob(new Blob([text], { type }), fileName);
+}
+
+function requestErrorMessage(err, fallback) {
+  if (err?.name === "TimeoutError" || err?.name === "AbortError") {
+    return "Generation timed out. Ollama or one of the retrieval services is taking too long; retry with a shorter prompt or restart the local dev server.";
+  }
+  return err instanceof Error ? err.message : fallback;
+}
+
+async function downloadCadStl(layout) {
+  const fileBase = safeFileBase(layout?.device || "smart-health-generated-design");
+  try {
+    const response = await fetch("http://127.0.0.1:3001/api/cadquery-stl", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layout })
+    });
+    if (response.ok) {
+      downloadBlob(await response.blob(), `${fileBase}-cadquery.stl`);
+      return "cadquery";
+    }
+  } catch {
+    // Fall back to the browser-side JSCAD exporter below.
+  }
+  downloadBlob(exportStlBlob(buildAssembly(layout).unioned), `${fileBase}-jscad.stl`);
+  return "jscad";
 }
 
 function safeFileBase(name = "smart-health-design") {
@@ -180,7 +217,7 @@ function exportData(prompt, result) {
 function exportMarkdown(prompt, result) {
   const data = exportData(prompt, result);
   const lines = [
-    `# ${data.cadDesign?.device || "Smart Health Generated Design"}`,
+    `# ${data.cadDesign?.device || "Smart Health Architecture"}`,
     "",
     "## Prompt",
     prompt || "No prompt recorded.",
@@ -215,7 +252,8 @@ function exportMarkdown(prompt, result) {
     ...(data.standardsReferenced.length ? data.standardsReferenced.map((item) => `- ${item.standard} (${item.publisher}) - ${item.title}`) : ["- None referenced"]),
     "",
     "## CAD Components",
-    ...(data.cadDesign?.components?.length ? data.cadDesign.components.map((part) => `- ${part.type}: ${part.material}. Evidence: ${part.groundedIn}`) : ["- No CAD components generated"]),
+    data.cadDesign?.dimensions ? `Envelope: ${formatDimensions(data.cadDesign.dimensions) || "not specified"}` : "Envelope: not specified",
+    ...(data.cadDesign?.components?.length ? data.cadDesign.components.map((part) => `- ${part.type}: ${part.material}${part.placement ? `; placement: ${part.placement}` : ""}. Evidence: ${part.groundedIn}`) : ["- No CAD components generated"]),
     "",
     "## Proposal",
     data.proposal || "No proposal generated.",
@@ -256,9 +294,28 @@ function App() {
   const [designHistory, setDesignHistory] = useState([]);
   const [currentVersionId, setCurrentVersionId] = useState(null);
   const [acceptedVersionId, setAcceptedVersionId] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [theme, setTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem(THEME_STORAGE_KEY);
+      if (["light", "dark"].includes(saved)) return saved;
+    } catch {
+      // Fall back to dark if browser storage is unavailable.
+    }
+    return globalThis.matchMedia?.("(prefers-color-scheme: light)")?.matches ? "light" : "dark";
+  });
   const ActiveIcon = pages.find((page) => page.id === active)?.icon || Activity;
   const isDesignComplete = Boolean(designResult?.cadLayout);
   const isDesignAccepted = Boolean(acceptedResult?.cadLayout);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Theme still works for the current session without storage.
+    }
+  }, [theme]);
 
   useEffect(() => {
     if (!session?.token) {
@@ -365,11 +422,18 @@ function App() {
     <main className="app">
       <header className="topbar">
         <Logo />
+        <button className="sidebar-toggle" onClick={() => setSidebarOpen((open) => !open)} aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}>
+          <Menu size={18} />
+        </button>
         <nav className="top-actions">
           {["Retrieval", "Constraints", "Stakeholders", "History", "Export"].map((item) => (
             <button className={topPanel === item || (item === "History" && active === "history") ? "ghost active-tool" : "ghost"} key={item} onClick={() => handleTopAction(item)}>{item}</button>
           ))}
         </nav>
+        <button className="theme-toggle" onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")} aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}>
+          {theme === "dark" ? <Sun size={17} /> : <Moon size={17} />}
+          <span>{theme === "dark" ? "Light" : "Dark"}</span>
+        </button>
         <button className="avatar" onClick={handleLogout}>{initials(session.user?.name)} <ChevronDown size={16} /></button>
         {topPanel && (
           <TopActionPanel
@@ -387,20 +451,20 @@ function App() {
           return <button key={page.id} className={active === page.id ? "active" : ""} disabled={disabled} onClick={() => setActive(page.id)}><Icon size={17} />{page.label}</button>;
         })}
       </div>
-      <div className="shell">
-        <aside className="sidebar">
+      <div className={sidebarOpen ? "shell" : "shell sidebar-collapsed"}>
+        {sidebarOpen && <aside className="sidebar">
           {pages.map((page) => {
             const Icon = page.icon;
             const disabled = (page.id === "results" && !isDesignComplete) || (["explore", "cad"].includes(page.id) && !isDesignAccepted);
             return <button key={page.id} className={active === page.id ? "nav-item active" : "nav-item"} disabled={disabled} onClick={() => setActive(page.id)}><Icon size={21} />{page.label}</button>;
           })}
           <div className={isDesignComplete ? "info-panel ready" : "info-panel"}>
-            <h3>{isDesignComplete ? "Design Ready" : "Generation Gate"}</h3>
-            <p>{isDesignComplete ? "Evidence, proposal, and CAD layout are complete. The generated design page is unlocked." : "Run a New Design search. Results unlock after retrieval, reasoning, and CAD layout all finish."}</p>
-            <button className="primary inline-primary" disabled={!isDesignComplete} onClick={() => setActive("results")}>Open Generated Design</button>
+            <h3>{isDesignComplete ? "Architecture Ready" : "Generation Gate"}</h3>
+            <p>{isDesignComplete ? "Evidence, proposal, and CAD layout are complete. The architecture page is unlocked." : "Run a New Design search. Results unlock after retrieval, reasoning, and CAD layout all finish."}</p>
+            <button className="primary inline-primary" disabled={!isDesignComplete} onClick={() => setActive("results")}>Open Architecture</button>
             {isDesignComplete && !isDesignAccepted && <small>Accept a version before RAG Exploration and CAD Workspace use it.</small>}
           </div>
-        </aside>
+        </aside>}
         <section className="screen">
           <div className="screen-title">
             <ActiveIcon size={22} />
@@ -475,12 +539,12 @@ function TopActionPanel({ panel, prompt, result, onClose }) {
 
   function downloadGeneratedStl() {
     if (!result?.cadLayout) return;
-    downloadBlob(exportStlBlob(buildAssembly(result.cadLayout).unioned), `${fileBase}.stl`);
+    downloadCadStl(result.cadLayout);
   }
 
   async function shareReport() {
     if (!result) return;
-    const title = result.cadLayout?.device || "Smart Health Generated Design";
+    const title = result.cadLayout?.device || "Smart Health Architecture";
     const text = exportMarkdown(prompt, result);
     try {
       if (navigator.share) {
@@ -583,7 +647,7 @@ function LandingPage({ onAuth, checking }) {
         <div className="landing-copy">
           <span className="eyebrow">Evidence-grounded biomedical design</span>
           <h1>Generate health product concepts, retrieve evidence, and turn ideas into CAD-ready direction.</h1>
-          <p>Start with a clinical design prompt, let the system gather sources, then review a clean generated design workspace when the proposal and CAD concept are complete.</p>
+          <p>Start with a clinical design prompt, let the system gather sources, then review a clean architecture workspace when the proposal and CAD concept are complete.</p>
           <div className="landing-cta">
             <button className="primary auth-button" onClick={() => setMode("signup")}><UserPlus size={18} />Create workspace</button>
             <button className="ghost auth-button" onClick={() => setMode("login")}><LogIn size={18} />Log in</button>
@@ -703,6 +767,7 @@ function NewDesignPage({ result, onResult, onOpenResults }) {
       const response = await fetch("http://127.0.0.1:3001/api/design-search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(DESIGN_REQUEST_TIMEOUT_MS),
         body: JSON.stringify({ prompt: trimmed })
       });
       const data = await response.json();
@@ -710,7 +775,7 @@ function NewDesignPage({ result, onResult, onOpenResults }) {
       onResult(trimmed, data);
       setStatus("idle");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Design search failed");
+      setError(requestErrorMessage(err, "Design search failed"));
       setStatus("error");
     }
   }
@@ -719,7 +784,7 @@ function NewDesignPage({ result, onResult, onOpenResults }) {
     <div className="new-design">
       <div className="center-copy">
         <h1>Generate a New Smart Health Design</h1>
-        <p>Describe the health need once. The workspace will retrieve evidence, reason over it, and prepare a CAD concept before unlocking the generated design page.</p>
+        <p>Describe the health need once. The workspace will retrieve evidence, reason over it, and prepare a CAD concept before unlocking the architecture page.</p>
       </div>
       <h2>1. What would you like to design?</h2>
       <div className="choice-grid">
@@ -758,10 +823,10 @@ function NewDesignPage({ result, onResult, onOpenResults }) {
       )}
       <div className={isComplete ? "results-gate ready" : "results-gate"}>
         <div>
-          <strong>{isComplete ? "Generated design is ready" : "Generated design page is locked"}</strong>
+          <strong>{isComplete ? "Architecture is ready" : "Architecture page is locked"}</strong>
           <p>{isComplete ? "Retrieval, proposal generation, and CAD layout are complete." : "The button activates after evidence retrieval and CAD layout generation finish."}</p>
         </div>
-        <button className="primary gate-button" disabled={!isComplete} onClick={onOpenResults}>Open Generated Design</button>
+        <button className="primary gate-button" disabled={!isComplete} onClick={onOpenResults}>Open Architecture</button>
       </div>
     </div>
   );
@@ -807,6 +872,7 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
       const response = await fetch("http://127.0.0.1:3001/api/design-refine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(DESIGN_REQUEST_TIMEOUT_MS),
         body: JSON.stringify({ prompt: trimmed, previousPrompt: prompt, previousResult: result })
       });
       const data = await response.json();
@@ -815,7 +881,7 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
       setRefinement("");
       setRefineStatus("idle");
     } catch (err) {
-      setRefineError(err instanceof Error ? err.message : "Design refinement failed");
+      setRefineError(requestErrorMessage(err, "Design refinement failed"));
       setRefineStatus("error");
     }
   }
@@ -824,7 +890,7 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
     <div className="generated-page">
       <section className="generated-hero">
         <div>
-          <span className="eyebrow">Generated design package</span>
+          <span className="eyebrow">Generated architecture package</span>
           <h1>{result.cadLayout.device}</h1>
           <div className="chip-row"><span className="chip">{result.cadLayout.formFactor || "auto-selected form factor"}</span></div>
           <p>{prompt}</p>
@@ -857,8 +923,6 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
       </article>
 
       <AudienceToggle value={audience} onChange={setAudience} />
-
-      <CadLayoutPanel layout={result.cadLayout} />
 
       {audience === "common" && <CommonResults prompt={prompt} result={result} />}
 
@@ -954,7 +1018,7 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
         <div className="completion-card">
           <History size={28} />
           <strong>{acceptedVersionId ? "Accepted version selected" : "No accepted version yet"}</strong>
-          <span>{acceptedVersionId ? "RAG and CAD are using the version marked Accepted." : "Use I Like This Design here or on the generated design page."}</span>
+          <span>{acceptedVersionId ? "RAG and CAD are using the version marked Accepted." : "Use I Like This Design here or on the architecture page."}</span>
         </div>
       </section>
 
@@ -969,7 +1033,7 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
               <div className="history-card-header">
                 <div>
                   <span className="eyebrow">Version {item.version}</span>
-                  <h2>{layout.device || "Generated design"}</h2>
+                  <h2>{layout.device || "Generated architecture"}</h2>
                   <p>{item.kind} {item.createdAt ? `on ${new Date(item.createdAt).toLocaleString()}` : ""}</p>
                 </div>
                 <div className="history-badges">
@@ -1305,50 +1369,6 @@ function FormattedProposal({ text }) {
   );
 }
 
-function CadLayoutPanel({ layout }) {
-  const assembly = useMemo(() => buildAssembly(layout), [layout]);
-
-  function downloadStl() {
-    const blob = exportStlBlob(assembly.unioned);
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${layout.device.replace(/\s+/g, "-").toLowerCase()}.stl`;
-    link.click();
-    URL.revokeObjectURL(url);
-  }
-
-  return (
-    <article className="panel">
-      <h3><Box size={20} />CAD Design Concept: {layout.device}</h3>
-      <div className="chip-row"><span className="chip">{layout.formFactor || "auto-selected form factor"}</span></div>
-      <div className="design-status">
-        <span className="status-dot" />
-        {layout.caveat}
-      </div>
-      <div className="cad-preview-canvas">
-        <Canvas camera={{ position: [3.5, 2.5, 3.5], fov: 45 }}>
-          <ambientLight intensity={0.6} />
-          <directionalLight position={[4, 5, 4]} intensity={1} />
-          <gridHelper args={[6, 12, "#1463ff", "#0a1f30"]} />
-          {assembly.parts.map((part) => <CadPartMesh key={part.id} part={part} />)}
-          <OrbitControls />
-        </Canvas>
-      </div>
-      <button className="primary" onClick={downloadStl}>Download STL</button>
-      <div className="evidence-group">
-        <h4>Component evidence</h4>
-        {assembly.parts.map((part) => (
-          <div className="list-row" key={part.id}>
-            <Check size={16} />
-            <span><strong>{part.type}</strong> ({part.material}) — {part.groundedIn}</span>
-          </div>
-        ))}
-      </div>
-    </article>
-  );
-}
-
 function CadPartMesh({ part }) {
   const geometry = useMemo(() => geom3ToBufferGeometry(part.geom3), [part.geom3]);
   return (
@@ -1399,12 +1419,23 @@ function evidenceItems(result) {
 
 function cadLayerItems(result) {
   if (!result?.cadLayout?.components?.length) return ["No generated CAD components yet."];
-  return result.cadLayout.components.map((component) => `${component.type}: ${component.material}`);
+  const dimensions = formatDimensions(result.cadLayout.dimensions);
+  return [
+    `${result.cadLayout.formFactor || "Auto-selected"} geometry family${dimensions ? ` - ${dimensions}` : ""}`,
+    ...result.cadLayout.components.map((component) => `${component.type}: ${[component.material, component.placement].filter(Boolean).join(" - ")}`)
+  ];
 }
 
 function cadEvidenceItems(result) {
   if (!result?.cadLayout?.components?.length) return ["Run a New Design search to generate component evidence."];
   return result.cadLayout.components.map((component) => `${component.type}: ${component.groundedIn}`);
+}
+
+function formatDimensions(dimensions) {
+  if (!dimensions) return "";
+  const values = [dimensions.lengthMm, dimensions.widthMm, dimensions.heightMm].map((value) => Number(value));
+  if (values.some((value) => !Number.isFinite(value) || value <= 0)) return "";
+  return `${values.map((value) => Math.round(value)).join(" x ")} mm`;
 }
 
 function cadInsightCards(result) {
@@ -1455,16 +1486,27 @@ function ExplorePage({ prompt, result, onOpenCad }) {
   const components = result.cadLayout?.components || [];
 
   return (
-    <div className="explore-grid">
-      <aside className="left-rail">
+    <div className="explore-page">
+      <section className="explore-overview-grid">
         <Panel title="Knowledge Sources (RAG)" icon={Search} items={["PrimeKG knowledge graph", "Semantic Scholar papers", "MedlinePlus health topics", "ONC SAFER Guides", "USCDI data classes", "Named standards references"]} />
         <Panel title="Extracted Prompt" icon={SlidersHorizontal} items={[
           `Disease: ${result.extraction?.disease || "not detected"}`,
           `Symptom: ${result.extraction?.symptomPhrase || "not detected"}`,
           `Device intent: ${result.extraction?.deviceIntent || "not detected"}`
         ]} />
-      </aside>
-      <section className="main-area">
+        <article className="panel generated-design-card">
+          <h3><UserRound size={20} />Architecture</h3>
+          <div className="generated-design-summary">
+            <strong>{result.cadLayout?.device || "No CAD concept generated"}</strong>
+            <span>{result.cadLayout?.formFactor || "CAD form factor pending"}</span>
+            <span>{result.kgGrounded ? "PrimeKG grounded" : "No PrimeKG match"}</span>
+            <span>{result.warnings?.length || 0} warnings</span>
+          </div>
+          <button className="primary" disabled={!result.cadLayout} onClick={onOpenCad}>Proceed to CAD Design</button>
+        </article>
+      </section>
+
+      <section className="main-area explore-main">
         <h1>Retrieval-Augmented Design Exploration</h1>
         {prompt && <p>{prompt}</p>}
         <div className="metric-row">
@@ -1472,8 +1514,8 @@ function ExplorePage({ prompt, result, onOpenCad }) {
         </div>
         <div className="concept-grid">
           {components.length > 0 ? (
-            components.slice(0, 4).map((component, index) => (
-              <Concept key={component.id} title={`Component ${index + 1}`} name={component.type} material={component.material} evidence={component.groundedIn} />
+            components.map((component, index) => (
+              <Concept key={component.id} title={`Component ${index + 1}`} component={component} name={component.type} material={component.material} evidence={component.groundedIn} />
             ))
           ) : (
             <Concept title="Generated Concept" name={result.cadLayout?.device || "Design proposal"} material="CAD layout not available" evidence="The proposal was generated, but no CAD component layout was returned." />
@@ -1482,41 +1524,50 @@ function ExplorePage({ prompt, result, onOpenCad }) {
         <Panel title="Rationale & Key Evidence" icon={FileText} items={evidenceItems(result)} />
         <CompareTable result={result} />
       </section>
-      <aside className="right-rail chat-rail">
-        <Panel title="Generated Design" icon={UserRound} items={[
-          result.cadLayout?.device || "No CAD concept generated",
-          result.kgGrounded ? "PrimeKG grounded" : "No PrimeKG match",
-          `${result.warnings?.length || 0} warnings`
-        ]} />
-        <Chat />
-        <button className="primary" disabled={!result.cadLayout} onClick={onOpenCad}>Proceed to CAD Design</button>
-      </aside>
     </div>
   );
 }
 
 function CadPage({ prompt, result }) {
   const insights = cadInsightCards(result);
+  const [cadMode, setCadMode] = useState(result?.cadLayout ? "generated" : "upload");
+  const hasGeneratedCad = Boolean(result?.cadLayout);
+  const showGeneratedDetails = cadMode === "generated" && hasGeneratedCad;
+
+  useEffect(() => {
+    if (!hasGeneratedCad && cadMode === "generated") setCadMode("upload");
+  }, [hasGeneratedCad, cadMode]);
 
   return (
     <div className="cad-grid">
       <aside className="left-rail">
-        <Panel title="Generated Model Layers" icon={Layers} items={cadLayerItems(result)} />
-        <Panel title="Component Evidence" icon={Gauge} items={cadEvidenceItems(result)} />
+        <article className="panel cad-source-panel">
+          <h3><Box size={20} />CAD Source</h3>
+          <div className="segmented-control cad-source-control" role="group" aria-label="CAD source">
+            <button className={cadMode === "generated" ? "active" : ""} disabled={!hasGeneratedCad} onClick={() => setCadMode("generated")}>Generated CAD</button>
+            <button className={cadMode === "upload" ? "active" : ""} onClick={() => setCadMode("upload")}>Upload STL</button>
+          </div>
+          <p>{cadMode === "generated" ? "Use the accepted LLM-generated CAD concept." : "Upload an STL file, then drag to rotate and scroll to zoom."}</p>
+        </article>
+        {showGeneratedDetails && (
+          <>
+            <Panel title="Generated Model Layers" icon={Layers} items={cadLayerItems(result)} />
+            <Panel title="Component Evidence" icon={Gauge} items={cadEvidenceItems(result)} />
+          </>
+        )}
       </aside>
       <section className="cad-stage">
-        {result?.cadLayout ? <GeneratedCadViewer layout={result.cadLayout} prompt={prompt} /> : <StlUploadViewer />}
+        {cadMode === "generated" && hasGeneratedCad ? <GeneratedCadViewer layout={result.cadLayout} prompt={prompt} /> : <StlUploadViewer />}
       </section>
       <aside className="right-rail cad-copy">
-        <h1>{result?.cadLayout?.device || "CAD Workspace"}</h1>
-        {prompt && <p>{prompt}</p>}
-        {insights.length > 0 ? insights.map((card, idx) => (
+        <h1>{showGeneratedDetails ? result.cadLayout.device : "Uploaded STL Workspace"}</h1>
+        {showGeneratedDetails && prompt && <p>{prompt}</p>}
+        {showGeneratedDetails && insights.length > 0 ? insights.map((card, idx) => (
           <article className="explain" key={card.title}><strong>{idx + 1}. {card.title}</strong><p>{card.text}</p><span>{card.impact}</span></article>
         )) : (
-          <article className="explain"><strong>No generated CAD yet</strong><p>Run a New Design search to populate this workspace with generated layers, component evidence, and a CAD preview.</p><span>Waiting</span></article>
+          <article className="explain"><strong>{cadMode === "upload" ? "Inspect a custom STL" : "No generated CAD yet"}</strong><p>{cadMode === "upload" ? "Use the upload viewer to inspect an external STL model. Generated layers, evidence, and acceptance controls stay hidden in this mode." : "Run a New Design search to populate this workspace with generated layers, component evidence, and a CAD preview."}</p><span>{cadMode === "upload" ? "Upload mode" : "Waiting"}</span></article>
         )}
-        <Chat compact />
-        <div className="action-row"><button className="success">Accept Design</button><button className="primary">Proceed to Prototype</button></div>
+        {showGeneratedDetails && <div className="action-row"><button className="success">Accept Architecture</button><button className="primary">Proceed to Prototype</button></div>}
       </aside>
     </div>
   );
@@ -1524,15 +1575,10 @@ function CadPage({ prompt, result }) {
 
 function GeneratedCadViewer({ layout, prompt }) {
   const assembly = useMemo(() => buildAssembly(layout), [layout]);
+  const dimensionText = formatDimensions(layout.dimensions);
 
   function downloadStl() {
-    const blob = exportStlBlob(assembly.unioned);
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${layout.device.replace(/\s+/g, "-").toLowerCase()}.stl`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadCadStl(layout);
   }
 
   return (
@@ -1541,6 +1587,7 @@ function GeneratedCadViewer({ layout, prompt }) {
         <div>
           <strong>{layout.device}</strong>
           <span className="chip">{layout.formFactor || "auto-selected form factor"}</span>
+          {dimensionText && <span className="chip">{dimensionText}</span>}
           {prompt && <span className="stl-file-meta">{prompt}</span>}
         </div>
         <button className="primary download-inline" onClick={downloadStl}>Download STL</button>
@@ -1562,8 +1609,7 @@ function StlUploadViewer() {
   const [model, setModel] = useState(null); // { fileName, geometry, dims, triangleCount, maxDim }
   const [error, setError] = useState(null);
 
-  async function handleFile(event) {
-    const file = event.target.files?.[0];
+  async function loadStlFile(file) {
     if (!file) return;
     setError(null);
 
@@ -1586,8 +1632,17 @@ function StlUploadViewer() {
     }
   }
 
+  async function handleFile(event) {
+    await loadStlFile(event.target.files?.[0]);
+  }
+
+  async function handleDrop(event) {
+    event.preventDefault();
+    await loadStlFile(event.dataTransfer.files?.[0]);
+  }
+
   return (
-    <div className="stl-viewer">
+    <div className="stl-viewer" onDrop={handleDrop} onDragOver={(event) => event.preventDefault()}>
       <div className="stl-toolbar">
         <label className="stl-upload-button">
           <CloudUpload size={16} />
@@ -1619,7 +1674,7 @@ function StlUploadViewer() {
         !error && (
           <div className="stl-empty">
             <Box size={48} />
-            <p>Upload an .stl file to view and rotate/zoom it here.</p>
+            <p>Upload or drag an .stl file here, then rotate and zoom it with the mouse.</p>
           </div>
         )
       )}
@@ -1635,8 +1690,37 @@ function Donut() {
   return <div className="panel donut-panel"><h3>Knowledge Hub Overview</h3><div className="donut"><span>26,631<br /><small>Total</small></span></div></div>;
 }
 
-function Concept({ title, name, material, evidence }) {
-  return <article className="concept"><h3>{title}</h3><h2>{name}</h2><div className="concept-art"><Box size={46} /></div><ul><li>{material}</li><li>{evidence}</li></ul></article>;
+function conceptVisual(component, name = "") {
+  const text = `${component?.type || ""} ${component?.id || ""} ${component?.placement || ""} ${name}`.toLowerCase();
+  if (/\b(battery|power|charging|charge)\b/.test(text)) return { Icon: Battery, label: "Power", tone: "green" };
+  if (/\b(pcb|controller|processor|electronics|microcontroller|main)\b/.test(text)) return { Icon: CircuitBoard, label: "Controller", tone: "blue" };
+  if (/\b(ecg|heart|pulse|oximeter|spo2|ppg)\b/.test(text)) return { Icon: HeartPulse, label: "Vitals", tone: "red" };
+  if (/\b(temp|thermal|infrared|heat)\b/.test(text)) return { Icon: Thermometer, label: "Thermal", tone: "yellow" };
+  if (/\b(saliva|sweat|microfluidic|fluid|glucose|droplet)\b/.test(text)) return { Icon: Droplets, label: "Fluid", tone: "cyan" };
+  if (/\b(sensor|electrode|accelerometer|imu|pressure|optical|probe)\b/.test(text)) return { Icon: Gauge, label: "Sensor", tone: "purple" };
+  if (/\b(antenna|wireless|bluetooth|radio|alert|transmit)\b/.test(text)) return { Icon: Zap, label: "Signal", tone: "cyan" };
+  if (/\b(housing|enclosure|shell|base|case|mouthguard|cast|patch|clip|strap|band)\b/.test(text)) return { Icon: Box, label: "Structure", tone: "blue" };
+  return { Icon: Cpu, label: "Module", tone: "cyan" };
+}
+
+function Concept({ title, name, material, evidence, component }) {
+  const visual = conceptVisual(component, name);
+  const Icon = visual.Icon;
+  return (
+    <article className="concept">
+      <h3>{title}</h3>
+      <h2>{name}</h2>
+      <div className={`concept-art concept-art-${visual.tone}`}>
+        <Icon size={46} />
+        <span>{visual.label}</span>
+      </div>
+      <ul>
+        <li>{material}</li>
+        {component?.placement && <li>{component.placement}</li>}
+        <li>{evidence}</li>
+      </ul>
+    </article>
+  );
 }
 
 function CompareTable({ result }) {

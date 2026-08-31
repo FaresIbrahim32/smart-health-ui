@@ -1,6 +1,8 @@
 import http from "node:http";
+import { spawnSync } from "node:child_process";
 import { pbkdf2Sync, randomBytes, timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
@@ -20,6 +22,7 @@ try {
 const PORT = Number(process.env.SMART_HEALTH_API_PORT || 3001);
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2:latest";
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 240000);
 const DATA_DIR = path.join(__dirname, "data");
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
@@ -62,6 +65,16 @@ function sendJson(res, status, body) {
     "Access-Control-Allow-Headers": "Content-Type, Authorization"
   });
   res.end(JSON.stringify(body));
+}
+
+function sendBinary(res, status, buffer, headers = {}) {
+  res.writeHead(status, {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    ...headers
+  });
+  res.end(buffer);
 }
 
 async function readJson(req) {
@@ -145,6 +158,7 @@ async function callOllama(messages, { format } = {}) {
   const ollamaRes = await fetch(`${OLLAMA_URL}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: AbortSignal.timeout(OLLAMA_TIMEOUT_MS),
     body: JSON.stringify({
       model: OLLAMA_MODEL,
       stream: false,
@@ -229,21 +243,46 @@ You are given four evidence blocks, all already retrieved - use ONLY these to gr
 const CAD_LAYOUT_SYSTEM_PROMPT = `You turn an already-written health device proposal into a form factor and short list of physical components for an illustrative CAD preview - not a manufacturing drawing. A separate deterministic renderer decides the exact 3D shapes and layout; your job is to choose the broad product form and name the right parts grounded in evidence.
 
 Respond with ONLY a JSON object, no prose, no markdown fences, matching exactly:
-{"device": string, "formFactor": "wristband" | "mouthguard" | "cast" | "patch" | "handheld", "components": [{"id": string, "type": string, "material": string, "groundedIn": string}], "caveat": string}
+{"device": string, "formFactor": "wristband" | "mouthguard" | "cast" | "patch" | "handheld" | "clip-on", "dimensions": {"lengthMm": number, "widthMm": number, "heightMm": number}, "components": [{"id": string, "type": string, "material": string, "groundedIn": string, "placement": string}], "caveat": string}
 
 Rules:
-- Choose "mouthguard" for oral/dental/biting/bruxism/saliva/palate concepts.
+- Choose "mouthguard" only when the original prompt or proposal explicitly mentions oral/dental/biting/bruxism/saliva/palate context. Never use it as a generic wearable default.
 - Choose "cast" for limb support, fracture, immobilization, orthopedic, or rehab concepts.
 - Choose "patch" for skin adhesive, chest, glucose, ECG, temperature, wound, or low-profile body-worn concepts.
 - Choose "handheld" for scanner, inhaler-like, grip, portable reader, or non-worn concepts.
+- Choose "clip-on" for finger, ear, clothing, inhaler, cane, wheelchair, tube, or accessory-mounted concepts.
 - Choose "wristband" only for wrist/bracelet/watch/band concepts.
+- For breathing, respiratory, cystic fibrosis, asthma, COPD, shortness-of-breath, or cough concepts, prefer "patch", "clip-on", or "handheld" unless the user explicitly asks for a wrist, oral, or cast design.
 - 4-8 components. Typical parts may include a main housing/PCB/controller, sensors, battery, enclosure, strap/adhesive/cast shell/mouthguard base depending on the form factor.
 - "type" is a short human label for the part (e.g. "Pulse oximeter sensor"), not a geometric shape.
+- "dimensions" are approximate outer envelope dimensions in millimeters for the illustrative preview. Use realistic concept-scale values for the chosen form factor.
+- "placement" should be a short physical location hint like "inner molar channel", "dorsal cast shell", "central adhesive island", "front face", "hinge side", or "underside contact pad".
 - "groundedIn" must name the SPECIFIC evidence behind that component's inclusion or material choice (a PrimeKG anatomy/phenotype node, a [n] paper marker, a [Gn] guideline marker, or the proposal text). If a component is purely illustrative with no evidence behind it, say "illustrative only - no direct evidence" rather than inventing a justification.
 - "caveat" must plainly state this is an illustrative generic layout for the chosen form factor, not manufacturing/engineering specifications.
 - Do not invent evidence markers that were not given to you.`;
 
-function parseCadLayout(raw) {
+function inferCadFormFactor(text) {
+  const normalized = String(text || "").toLowerCase();
+  if (/\b(mouth|oral|dental|tooth|teeth|gum|saliva|palate|bite|brux|mouthguard)\b/.test(normalized)) return "mouthguard";
+  if (/\b(cast|splint|orthopedic|fracture|immobil|limb|ankle|rehab)\b/.test(normalized)) return "cast";
+  if (/\b(finger|ear|earlobe|clip|clamp|cane|wheelchair|tube|accessory|inhaler-mounted)\b/.test(normalized)) return "clip-on";
+  if (/\b(handheld|scanner|reader|wand|grip|portable|spirometer|inhaler)\b/.test(normalized)) return "handheld";
+  if (/\b(patch|adhesive|skin|chest|ecg|wound|glucose|insulin|temperature|respiratory|breathing|shortness of breath|cystic fibrosis|asthma|copd|cough)\b/.test(normalized)) return "patch";
+  if (/\b(wrist|bracelet|watch|band)\b/.test(normalized)) return "wristband";
+  return "patch";
+}
+
+function sanitizeCadFormFactor(requested, context) {
+  const allowed = ["wristband", "mouthguard", "cast", "patch", "handheld", "clip-on"];
+  const normalized = String(context || "").toLowerCase();
+  if (!allowed.includes(requested)) return inferCadFormFactor(normalized);
+  if (requested === "mouthguard" && !/\b(mouth|oral|dental|tooth|teeth|gum|saliva|palate|bite|brux|mouthguard)\b/.test(normalized)) {
+    return inferCadFormFactor(normalized.replace(/\bmouthguard\b/g, ""));
+  }
+  return requested;
+}
+
+function parseCadLayout(raw, context = "") {
   try {
     const cleaned = raw.trim().replace(/^```json\s*|```$/g, "");
     const parsed = JSON.parse(cleaned);
@@ -256,15 +295,22 @@ function parseCadLayout(raw) {
         id: String(c.id || `component-${i + 1}`),
         type: String(c.type || c.id || "component"),
         material: String(c.material || "unspecified"),
-        groundedIn: String(c.groundedIn || "illustrative only - no direct evidence")
+        groundedIn: String(c.groundedIn || "illustrative only - no direct evidence"),
+        placement: String(c.placement || "")
       }));
 
     if (components.length === 0) return null;
+    const dimensions = parsed.dimensions && typeof parsed.dimensions === "object"
+      ? {
+          lengthMm: Number(parsed.dimensions.lengthMm) || null,
+          widthMm: Number(parsed.dimensions.widthMm) || null,
+          heightMm: Number(parsed.dimensions.heightMm) || null
+        }
+      : null;
     return {
       device: String(parsed.device || "Wearable concept"),
-      formFactor: ["wristband", "mouthguard", "cast", "patch", "handheld"].includes(parsed.formFactor)
-        ? parsed.formFactor
-        : null,
+      formFactor: sanitizeCadFormFactor(parsed.formFactor, context),
+      dimensions,
       components,
       caveat: String(parsed.caveat || "Illustrative generic layout for the selected form factor - not manufacturing specifications.")
     };
@@ -282,12 +328,32 @@ async function generateCadLayout({ prompt, proposal, evidenceBlocks, warnings })
       ],
       { format: "json" }
     );
-    const cadLayout = parseCadLayout(cadLayoutRaw);
+    const cadLayout = parseCadLayout(cadLayoutRaw, `${prompt}\n\n${proposal}`);
     if (!cadLayout) warnings.push("Could not generate a CAD layout preview for this proposal.");
     return cadLayout;
   } catch (error) {
     warnings.push(`CAD layout generation failed: ${error instanceof Error ? error.message : String(error)}`);
     return null;
+  }
+}
+
+function buildCadqueryStl(layout) {
+  const workDir = mkdtempSync(path.join(tmpdir(), "smart-health-cadquery-"));
+  const outputPath = path.join(workDir, "model.stl");
+  try {
+    const scriptPath = path.join(__dirname, "scripts", "cadquery_generator.py");
+    const run = spawnSync("python3", [scriptPath, outputPath], {
+      input: JSON.stringify(layout),
+      encoding: "utf8",
+      timeout: 45000,
+      maxBuffer: 1024 * 1024 * 8
+    });
+    if (run.status !== 0) {
+      throw new Error((run.stderr || run.stdout || "CadQuery generation failed").trim());
+    }
+    return readFileSync(outputPath);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
   }
 }
 
@@ -380,6 +446,25 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 500, {
         error: "Chat request failed",
         detail: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  if (req.method === "POST" && req.url === "/api/cadquery-stl") {
+    try {
+      const { layout } = await readJson(req);
+      if (!layout?.components?.length) return sendJson(res, 400, { error: "layout with components is required" });
+      const stl = buildCadqueryStl(layout);
+      const name = String(layout.device || "smart-health-cadquery").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "smart-health-cadquery";
+      return sendBinary(res, 200, stl, {
+        "Content-Type": "model/stl",
+        "Content-Disposition": `attachment; filename="${name}-cadquery.stl"`
+      });
+    } catch (error) {
+      return sendJson(res, 501, {
+        error: "CadQuery STL generation failed",
+        detail: error instanceof Error ? error.message : String(error),
+        install: "Install CadQuery with `python3 -m pip install cadquery` or use the JSCAD fallback download."
       });
     }
   }
