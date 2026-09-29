@@ -57,8 +57,12 @@ import "./styles.css";
 const pages = [
   { id: "pipeline", label: "Pipeline", icon: Activity },
   { id: "knowledge", label: "Knowledge Sources", icon: BookOpen },
-  { id: "new", label: "New Design", icon: Home },
+  { id: "target", label: "Design Target", icon: SlidersHorizontal },
+  { id: "workflow", label: "Workflow", icon: Layers },
+  { id: "new", label: "Prompt", icon: Home },
   { id: "results", label: "Architecture", icon: CheckCircle2 },
+  { id: "evidence", label: "Evidence", icon: FileText },
+  { id: "solutions", label: "Previous Solutions", icon: Search },
   { id: "history", label: "History", icon: History },
   { id: "explore", label: "RAG Exploration", icon: Search },
   { id: "cad", label: "CAD Workspace", icon: Box }
@@ -82,7 +86,7 @@ const sourceTypes = [
     items: ["Disease autocomplete", "Alias resolution", "Raw-term fallback"]
   },
   {
-    title: "Semantic Scholar",
+    title: "Literature APIs",
     badge: "Paper Search API",
     icon: BookOpen,
     color: "purple",
@@ -116,10 +120,10 @@ const sourceTypes = [
 ];
 
 const pipelineEvidence = [
-  ["Entity extraction", "Ollama llama3.2 extracts disease, symptom, and device intent."],
+  ["Entity extraction", "Ollama gemma4 extracts disease, symptom, and device intent."],
   ["Synonym resolution", "NCBI PubTator3 canonicalizes disease names before graph lookup."],
   ["Graph grounding", "PrimeKG supplies disease, phenotype, protein, and anatomy relationships."],
-  ["Literature retrieval", "Semantic Scholar returns paper metadata, abstracts, and URLs."],
+  ["Literature retrieval", "Semantic Scholar and Europe PMC return paper metadata, abstracts, and URLs."],
   ["Guideline retrieval", "MedlinePlus, ONC SAFER Guides, and USCDI chunks are embedded locally."]
 ];
 
@@ -129,6 +133,12 @@ const promptAudiences = [
     label: "Everyday user",
     icon: UserRound,
     description: "Plain wording is converted into an engineering search prompt."
+  },
+  {
+    id: "caregiver",
+    label: "Caregiver",
+    icon: UsersRound,
+    description: "Care concerns are converted into patient-friendly monitoring and alert needs."
   },
   {
     id: "engineer",
@@ -141,6 +151,72 @@ const promptAudiences = [
     label: "Doctor",
     icon: HeartPulse,
     description: "Clinical needs are translated into measurable design signals."
+  },
+  {
+    id: "researcher",
+    label: "Researcher",
+    icon: Microscope,
+    description: "Research questions are translated into evidence-seeking design hypotheses."
+  },
+  {
+    id: "regulatory",
+    label: "Regulatory",
+    icon: ShieldCheck,
+    description: "Safety, documentation, and human-approval concerns guide the search prompt."
+  }
+];
+
+const evidenceViewpoints = [
+  { id: "common", label: "Everyday user", icon: UserRound, description: "Plain-language evidence with short source-backed notes." },
+  { id: "caregiver", label: "Caregiver", icon: UsersRound, description: "Practical safety, comfort, adherence, and escalation context." },
+  { id: "doctor", label: "Doctor", icon: HeartPulse, description: "Clinical guidance, phenotypes, symptoms, and literature context." },
+  { id: "engineer", label: "Engineer", icon: Wrench, description: "Component rationale, standards references, and implementation trade-offs." },
+  { id: "researcher", label: "Researcher", icon: Microscope, description: "Literature-heavy evidence, graph entities, and research gaps." },
+  { id: "regulatory", label: "Regulatory", icon: ShieldCheck, description: "Human review caveats, safety standards to verify, and documentation needs." }
+];
+
+const ideationTargets = [
+  {
+    id: "cad",
+    title: "CAD Design",
+    icon: Box,
+    description: "Evidence-backed hardware concept and downloadable STL."
+  },
+  {
+    id: "mobile",
+    title: "Mobile App Design",
+    icon: Cpu,
+    description: "Companion workflows, monitoring screens, and data needs."
+  },
+  {
+    id: "both",
+    title: "Both CAD & Mobile App",
+    icon: PackageCheck,
+    description: "Coordinate physical device and digital experience."
+  }
+];
+
+const workflowModes = [
+  {
+    id: "typical",
+    title: "Typical Flow",
+    label: "Phase 1 + Phase 2",
+    icon: Layers,
+    description: "Ideate concepts first, then move into engineering specs and CAD."
+  },
+  {
+    id: "phase1",
+    title: "Phase 1 Only",
+    label: "Ideation only",
+    icon: Sparkles,
+    description: "Stay in concept exploration, evidence, trade-offs, and human review."
+  },
+  {
+    id: "phase2",
+    title: "Phase 2 Only",
+    label: "Engineering focus",
+    icon: CircuitBoard,
+    description: "Use an accepted concept to focus on specs, constraints, and 3D preview."
   }
 ];
 
@@ -221,11 +297,159 @@ function latestRefinementProfile(result) {
   return history.length ? history[history.length - 1]?.promptProfile : null;
 }
 
+function hasIdeation(result) {
+  return Boolean(result?.ideation?.options?.length);
+}
+
+function activeConcept(result) {
+  return result?.selectedConcept || result?.ideation?.options?.find((option) => option.id === result.ideation.recommendedOptionId) || result?.ideation?.options?.[0] || null;
+}
+
+function buildInstantSpecLayout(result, concept) {
+  if (!concept) return null;
+  const formFactor = concept.formFactor || "patch";
+  const scores = concept.evidenceStrength || {};
+  const evidence = [
+    result?.subgraph?.disease?.name ? `PrimeKG disease node: ${result.subgraph.disease.name}` : "",
+    result?.literature?.[0]?.title ? `Literature: ${result.literature[0].title}` : "",
+    result?.guidelines?.[0]?.title ? `Guidance: ${result.guidelines[0].title}` : "",
+    concept.rationale ? `Concept rationale: ${concept.rationale}` : ""
+  ].filter(Boolean).slice(0, 3).join(" | ") || "selected concept rationale";
+  const dimensions = {
+    mouthguard: { lengthMm: 70, widthMm: 55, heightMm: 12 },
+    retainer: { lengthMm: 68, widthMm: 52, heightMm: 10 },
+    cast: { lengthMm: 180, widthMm: 85, heightMm: 45 },
+    bottle: { lengthMm: 72, widthMm: 72, heightMm: 185 },
+    patch: { lengthMm: 64, widthMm: 38, heightMm: 7 },
+    handheld: { lengthMm: 112, widthMm: 54, heightMm: 18 },
+    "clip-on": { lengthMm: 46, widthMm: 28, heightMm: 22 },
+    wristband: { lengthMm: 48, widthMm: 42, heightMm: 14 },
+    sword: { lengthMm: 720, widthMm: 95, heightMm: 38 },
+    glove: { lengthMm: 190, widthMm: 105, heightMm: 18 },
+    "cup holder": { lengthMm: 92, widthMm: 92, heightMm: 82 },
+    cup: { lengthMm: 80, widthMm: 80, heightMm: 110 },
+    sleeve: { lengthMm: 220, widthMm: 92, heightMm: 24 },
+    insole: { lengthMm: 250, widthMm: 90, heightMm: 12 },
+    helmet: { lengthMm: 210, widthMm: 170, heightMm: 125 },
+    belt: { lengthMm: 260, widthMm: 48, heightMm: 16 },
+    ring: { lengthMm: 28, widthMm: 28, heightMm: 8 },
+    textile: { lengthMm: 90, widthMm: 60, heightMm: 5 },
+    hybrid: { lengthMm: 72, widthMm: 42, heightMm: 12 },
+    adaptive: { lengthMm: 96, widthMm: 54, heightMm: 20 }
+  }[formFactor] || { lengthMm: 96, widthMm: 54, heightMm: 20 };
+  const impact = (key, offset = 0) => clampUiScore((Number(scores[key]) || Number(scores.overall) || 62) + offset);
+  const baseType = formFactor === "patch" ? "Flexible adhesive base"
+    : formFactor === "bottle" ? "Bottle body and smart cap"
+    : formFactor === "sword" ? "Training sword body, grip, guard, and blade prop"
+    : formFactor === "cup" ? "Cup body and rim interface"
+    : formFactor === "cup holder" ? "Cup holder cradle and retaining rim"
+    : formFactor === "glove" ? "Wearable glove body and finger channels"
+    : formFactor === "sleeve" ? "Flexible sleeve body"
+    : formFactor === "insole" ? "Footbed and insole support layer"
+    : formFactor === "helmet" ? "Headgear shell and comfort liner"
+    : formFactor === "belt" ? "Adjustable belt body"
+    : formFactor === "ring" ? "Ring band and inner contact surface"
+    : formFactor === "mouthguard" || formFactor === "retainer" ? "Biocompatible oral base"
+    : formFactor === "cast" ? "Semi-rigid support shell"
+    : formFactor === "clip-on" ? "Clip housing and soft contact pad"
+    : formFactor === "handheld" ? "Handheld enclosure"
+    : formFactor === "wristband" ? "Adjustable wearable band"
+    : "Requested-form enclosure";
+  const signalText = `${result?.promptProfile?.engineeringPrompt || ""} ${result?.extraction?.deviceIntent || ""} ${result?.extraction?.symptomPhrase || ""}`.toLowerCase();
+  const conceptText = `${signalText} ${concept.title || ""} ${concept.formFactor || ""} ${concept.plainDescription || ""} ${concept.professionalDescription || ""} ${concept.bestFor || ""}`.toLowerCase();
+  const spec = (id, type, material, placement, constraint, impactLabel, value, groundedIn) => ({ id, type, material, placement, constraint, impactLabel, impact: value, groundedIn });
+  const usesElectronics = /\b(track|monitor|sensor|smart|app|alert|sync|bluetooth|wireless|measure|level|volume|hydrate|sweat|pulse|oxygen|respir|motion|temperature)\b/.test(conceptText);
+  const needsSensor = /\b(track|monitor|sensor|measure|detect|level|volume|sweat|hydration|pulse|oxygen|respir|motion|temperature|glucose|pressure)\b/.test(conceptText);
+  const needsConnectivity = /\b(app|caregiver|parent|sync|phone|bluetooth|wireless|dashboard|notification)\b/.test(conceptText);
+  const needsAlert = /\b(alert|remind|notification|warn|nudge|alarm|status)\b/.test(conceptText);
+  const components = [
+    spec("base-interface", baseType, "material selected for comfort, durability, cleaning, and human review", ["bottle", "cup", "cup holder"].includes(formFactor) ? "primary container or holder body" : "body-facing or user-facing interface", "Must be reviewed for fit, cleaning, repeated use, age appropriateness, and misuse risk.", "Human Factors", impact("humanFactors", 2), evidence)
+  ];
+
+  if (needsSensor) {
+    const sensorType = /\b(water|bottle|hydration|drink|volume|refill)\b/.test(conceptText)
+      ? "Fluid intake / fill-level sensing"
+      : /\b(sweat|salinity|electrolyte|biofluid)\b/.test(conceptText)
+        ? "Sweat or biofluid sensing"
+        : /\b(respir|breath|dyspnea|shortness|cough|spo2|oxygen|pulse)\b/.test(conceptText)
+          ? "Respiratory and pulse-ox sensing"
+          : /\b(seizure|epilepsy|motion|fall|tremor|acceler)\b/.test(conceptText)
+            ? "Motion and event sensing"
+            : "Primary sensing module";
+    components.push(spec("sensing-module", sensorType, "sealed sensing package chosen for the target signal", ["bottle", "cup", "cup holder"].includes(formFactor) ? "rim, base, wall, or retaining cradle measurement zone" : "highest-signal contact zone", "Sensor choice and placement must be validated against the real-world signal, not assumed from the concept.", "Clinical", impact("clinical", 3), evidence));
+  }
+
+  if (usesElectronics) {
+    components.push(spec("control-module", "Low-power control module", "compact controller integrated only if active sensing or logic is required", ["bottle", "cup", "cup holder"].includes(formFactor) ? "protected rim, base, or cradle cavity" : "protected electronics pocket", "Firmware, electrical isolation, data handling, and failure behavior require engineering review.", "Engineering", impact("engineering", 2), "IEC 60601-1, IEC 62304, and selected concept rationale"));
+    components.push(spec("power-plan", "Power source / charging strategy", "battery, replaceable cell, or passive/no-battery strategy to be selected during engineering", "separated from pressure, fluid, and child-accessible zones", "Power is included only because this concept uses active electronics; thermal and charging safety need review.", "Safety", impact("overall", -2), "IEC 60601-1 and selected concept rationale"));
+  }
+
+  if (needsConnectivity) {
+    components.push(spec("connectivity", "Caregiver/app connectivity", "Bluetooth or near-field sync module if the workflow needs phone/caregiver review", "near controller or cap electronics", "Connectivity should minimize setup burden, protect privacy, and fail gracefully without hiding risk.", "Human Factors", impact("humanFactors", 1), "Caregiver workflow and selected concept rationale"));
+  }
+
+  if (needsAlert) {
+    components.push(spec("feedback-cue", "User feedback cue", "LED, haptic, or app-only reminder depending on age and setting", "visible cap, bottle sleeve, or app surface", "Alerts must be understandable and avoid alarm fatigue, false reassurance, or distracting a child during sports.", "Human Factors", impact("humanFactors", -1), "IEC 62366-1 usability review and selected concept rationale"));
+  }
+
+  if (!usesElectronics) {
+    components.push(spec("passive-marker", "Passive measurement or labeling feature", "printed scale, color-change material, or manual log area", "visible user-facing surface", "Passive concepts reduce electronics burden but rely on user/caregiver consistency.", "Human Factors", impact("humanFactors", 0), "Selected concept rationale"));
+  }
+
+  return {
+    device: `${concept.title} Engineering Spec`,
+    formFactor,
+    dimensions,
+    components: components.slice(0, 7),
+    caveat: "Engineering-spec concept preview only. Specs and geometry require qualified human review before clinical, safety, regulatory, or manufacturing use."
+  };
+}
+
+function evidenceLabel(score) {
+  if (score >= 80) return "High";
+  if (score >= 60) return "Medium";
+  return "Low";
+}
+
+async function filesToDocuments(files) {
+  const selected = Array.from(files || []).slice(0, 3);
+  return Promise.all(selected.map((file) => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, type: file.type || "application/octet-stream", data: reader.result });
+    reader.onerror = () => reject(reader.error || new Error(`Could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  })));
+}
+
+function promptPlaceholderFor(role, phase = "initial") {
+  const initial = {
+    common: "Example: I want something that helps someone with cystic fibrosis notice breathing trouble earlier...",
+    caregiver: "Example: I help care for someone with cystic fibrosis and want a simple way to know when their breathing seems worse...",
+    doctor: "Example: Need a patient-friendly way to monitor dyspnea and oxygenation trends in cystic fibrosis...",
+    engineer: "Example: Design a non-invasive wearable system for continuously monitoring shortness of breath in patients with cystic fibrosis...",
+    researcher: "Example: Explore evidence-backed sensing concepts for longitudinal respiratory symptom monitoring in cystic fibrosis...",
+    regulatory: "Example: Propose a home-use monitoring concept for cystic fibrosis with clear safety, usability, and review constraints..."
+  };
+  const refine = {
+    common: "Example: make it smaller and easier to wear every day...",
+    caregiver: "Example: make it easier for a caregiver to notice when something needs attention...",
+    doctor: "Example: prioritize dyspnea trend review, oxygenation context, and patient safety alerts...",
+    engineer: "Example: reduce enclosure volume, switch to a patch form factor, and separate sensor, battery, and radio modules...",
+    researcher: "Example: favor the concept with stronger literature support and clearer measurable outcomes...",
+    regulatory: "Example: make the concept safer for home use and clearer about human approval checkpoints..."
+  };
+  const source = phase === "refine" ? refine : initial;
+  return source[role] || source.common;
+}
+
 function exportData(prompt, result) {
   return {
     prompt,
     promptProfile: result.promptProfile || null,
     latestRefinementProfile: result.latestRefinementProfile || latestRefinementProfile(result),
+    ideation: result.ideation || null,
+    selectedConcept: result.selectedConcept || null,
+    supplementalDocuments: result.supplementalDocuments || [],
     extraction: result.extraction,
     commonUserInfo: commonUserInfo(result),
     definitions: {
@@ -240,15 +464,14 @@ function exportData(prompt, result) {
     guidelines: result.guidelines || [],
     standardsReferenced: result.standardsReferenced || [],
     proposal: result.proposal,
-    cadDesign: result.cadLayout,
-    warnings: result.warnings || []
+    cadDesign: result.cadLayout
   };
 }
 
 function exportMarkdown(prompt, result) {
   const data = exportData(prompt, result);
   const lines = [
-    `# ${data.cadDesign?.device || "Smart Health Architecture"}`,
+    `# ${data.selectedConcept?.title || data.cadDesign?.device || "Smart Health Architecture"}`,
     "",
     "## Prompt",
     prompt || "No prompt recorded.",
@@ -263,6 +486,12 @@ function exportMarkdown(prompt, result) {
     `- Disease: ${data.definitions.disease?.name || data.extraction?.disease || "not detected"}`,
     `- Symptom: ${data.definitions.symptom || "not detected"}`,
     `- Device intent: ${data.definitions.deviceIntent || "not detected"}`,
+    "",
+    "## Concept Options",
+    ...(data.ideation?.options?.length ? data.ideation.options.map((option) => `- ${option.title} (${option.formFactor}) - overall ${option.evidenceStrength?.overall ?? "n/a"}. ${option.plainDescription}`) : ["- None generated"]),
+    "",
+    "## Uploaded Supplemental Documents",
+    ...(data.supplementalDocuments.length ? data.supplementalDocuments.map((item) => `- ${item.name} (${item.type})`) : ["- None"]),
     "",
     "## Common User Information",
     ...data.commonUserInfo.terminology.map((item) => `- ${item.term}: ${item.description}`),
@@ -293,10 +522,7 @@ function exportMarkdown(prompt, result) {
     ...(data.cadDesign?.components?.length ? data.cadDesign.components.map((part) => `- ${part.type}: ${part.material}${part.placement ? `; placement: ${part.placement}` : ""}. Evidence: ${part.groundedIn}`) : ["- No CAD components generated"]),
     "",
     "## Proposal",
-    data.proposal || "No proposal generated.",
-    "",
-    "## Warnings",
-    ...(data.warnings.length ? data.warnings.map((warning) => `- ${warning}`) : ["- None"])
+    data.proposal || "No proposal generated."
   ];
   return lines.join("\n");
 }
@@ -322,8 +548,11 @@ function App() {
     }
   });
   const [authStatus, setAuthStatus] = useState(session?.token ? "checking" : "signed-out");
-  const [active, setActive] = useState("new");
+  const [active, setActive] = useState("target");
   const [topPanel, setTopPanel] = useState(null);
+  const [ideationTarget, setIdeationTarget] = useState("cad");
+  const [workflowMode, setWorkflowMode] = useState("typical");
+  const [evidenceViewpoint, setEvidenceViewpoint] = useState("common");
   const [designResult, setDesignResult] = useState(null);
   const [designPrompt, setDesignPrompt] = useState("");
   const [acceptedResult, setAcceptedResult] = useState(null);
@@ -342,8 +571,13 @@ function App() {
     return "navy";
   });
   const ActiveIcon = pages.find((page) => page.id === active)?.icon || Activity;
-  const isDesignComplete = Boolean(designResult?.cadLayout);
-  const isDesignAccepted = Boolean(acceptedResult?.cadLayout);
+  const isDesignComplete = hasIdeation(designResult);
+  const isDesignAccepted = hasIdeation(acceptedResult) && Boolean(acceptedResult?.selectedConcept);
+  const pageDisabled = (pageId) => (
+    (pageId === "results" && !isDesignComplete)
+    || (["evidence", "solutions"].includes(pageId) && !isDesignComplete)
+    || (["explore", "cad"].includes(pageId) && !isDesignAccepted)
+  );
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -428,11 +662,13 @@ function App() {
     return id;
   }
 
-  function acceptCurrentDesign() {
+  function acceptCurrentDesign(concept) {
+    const nextResult = { ...designResult, selectedConcept: concept || activeConcept(designResult) };
+    setDesignResult(nextResult);
     setAcceptedPrompt(designPrompt);
-    setAcceptedResult(designResult);
+    setAcceptedResult(nextResult);
     setAcceptedVersionId(currentVersionId);
-    setActive("explore");
+    setActive(workflowMode === "phase1" ? "results" : workflowMode === "phase2" ? "cad" : "explore");
   }
 
   function openHistoryVersion(item) {
@@ -447,7 +683,7 @@ function App() {
     setDesignResult(item.result);
     setCurrentVersionId(item.id);
     setAcceptedPrompt(item.prompt);
-    setAcceptedResult(item.result);
+    setAcceptedResult({ ...item.result, selectedConcept: item.result?.selectedConcept || activeConcept(item.result) });
     setAcceptedVersionId(item.id);
     setActive("explore");
   }
@@ -489,7 +725,7 @@ function App() {
       <div className="mobile-tabs">
         {pages.map((page) => {
           const Icon = page.icon;
-          const disabled = (page.id === "results" && !isDesignComplete) || (["explore", "cad"].includes(page.id) && !isDesignAccepted);
+          const disabled = pageDisabled(page.id);
           return <button key={page.id} className={active === page.id ? "active" : ""} disabled={disabled} onClick={() => setActive(page.id)}><Icon size={17} />{page.label}</button>;
         })}
       </div>
@@ -497,12 +733,12 @@ function App() {
         {sidebarOpen && <aside className="sidebar">
           {pages.map((page) => {
             const Icon = page.icon;
-            const disabled = (page.id === "results" && !isDesignComplete) || (["explore", "cad"].includes(page.id) && !isDesignAccepted);
+            const disabled = pageDisabled(page.id);
             return <button key={page.id} className={active === page.id ? "nav-item active" : "nav-item"} disabled={disabled} onClick={() => setActive(page.id)}><Icon size={21} />{page.label}</button>;
           })}
           <div className={isDesignComplete ? "info-panel ready" : "info-panel"}>
             <h3>{isDesignComplete ? "Architecture Ready" : "Generation Gate"}</h3>
-            <p>{isDesignComplete ? "Evidence, proposal, and CAD layout are complete. The architecture page is unlocked." : "Run a New Design search. Results unlock after retrieval, reasoning, and CAD layout all finish."}</p>
+            <p>{isDesignComplete ? "Evidence and concept options are ready. Choose a concept before RAG Exploration and CAD Workspace use it." : "Run a New Design search. Results unlock after retrieval, reasoning, and concept ideation finish."}</p>
             <button className="primary inline-primary" disabled={!isDesignComplete} onClick={() => setActive("results")}>Open Architecture</button>
             {isDesignComplete && !isDesignAccepted && <small>Accept a version before RAG Exploration and CAD Workspace use it.</small>}
           </div>
@@ -514,16 +750,47 @@ function App() {
           </div>
           {active === "pipeline" && <PipelinePage />}
           {active === "knowledge" && <KnowledgePage />}
+          {active === "target" && (
+            <TargetSelectionPage
+              value={ideationTarget}
+              onSelect={(value) => {
+                setIdeationTarget(value);
+                setActive("workflow");
+              }}
+            />
+          )}
+          {active === "workflow" && (
+            <WorkflowSelectionPage
+              value={workflowMode}
+              target={ideationTarget}
+              onSelect={(value) => {
+                setWorkflowMode(value);
+                setActive(value === "phase2" && isDesignAccepted ? "cad" : "new");
+              }}
+              onBack={() => setActive("target")}
+            />
+          )}
           {active === "new" && (
             <NewDesignPage
+              ideationTarget={ideationTarget}
+              workflowMode={workflowMode}
               result={designResult}
+              onDirectCadResult={(prompt, result) => {
+                setDesignPrompt(prompt);
+                setDesignResult(result);
+                setAcceptedPrompt(prompt);
+                setAcceptedResult(result);
+                const id = recordDesignVersion(prompt, result, "Direct Phase 2 CAD");
+                setAcceptedVersionId(id);
+                setActive("cad");
+              }}
               onResult={(prompt, result) => {
                 setDesignPrompt(prompt);
                 setDesignResult(result);
                 setAcceptedPrompt("");
                 setAcceptedResult(null);
                 setAcceptedVersionId(null);
-                if (result?.cadLayout) {
+                if (hasIdeation(result)) {
                   recordDesignVersion(prompt, result, "Initial generation");
                 } else {
                   setCurrentVersionId(null);
@@ -537,6 +804,16 @@ function App() {
               prompt={designPrompt}
               result={designResult}
               accepted={isDesignAccepted && acceptedResult === designResult}
+              evidenceViewpoint={evidenceViewpoint}
+              onEvidenceViewpointChange={setEvidenceViewpoint}
+              onOpenEvidence={(viewpoint) => {
+                setEvidenceViewpoint(viewpoint);
+                setActive("evidence");
+              }}
+              onOpenSolutions={(viewpoint) => {
+                setEvidenceViewpoint(viewpoint);
+                setActive("solutions");
+              }}
               onRefined={(result) => {
                 setDesignResult(result);
                 setAcceptedPrompt("");
@@ -547,6 +824,8 @@ function App() {
               onAccept={acceptCurrentDesign}
             />
           )}
+          {active === "evidence" && <EvidencePage prompt={designPrompt} result={designResult} viewpoint={evidenceViewpoint} onViewpointChange={setEvidenceViewpoint} onBack={() => setActive("results")} />}
+          {active === "solutions" && <PreviousSolutionsPage result={designResult} viewpoint={evidenceViewpoint} onViewpointChange={setEvidenceViewpoint} onBack={() => setActive("results")} />}
           {active === "history" && (
             <HistoryPage
               history={designHistory}
@@ -558,7 +837,10 @@ function App() {
             />
           )}
           {active === "explore" && <ExplorePage prompt={acceptedPrompt} result={acceptedResult} onOpenCad={() => setActive("cad")} />}
-          {active === "cad" && <CadPage prompt={acceptedPrompt} result={acceptedResult} />}
+          {active === "cad" && <CadPage prompt={acceptedPrompt} result={acceptedResult} onResultUpdate={(nextResult) => {
+            setAcceptedResult(nextResult);
+            setDesignResult(nextResult);
+          }} />}
         </section>
       </div>
     </main>
@@ -567,7 +849,8 @@ function App() {
 
 function TopActionPanel({ panel, prompt, result, onClose }) {
   const hasResult = Boolean(result);
-  const fileBase = safeFileBase(result?.cadLayout?.device || "smart-health-generated-design");
+  const concept = activeConcept(result);
+  const fileBase = safeFileBase(result?.cadLayout?.device || concept?.title || "smart-health-generated-design");
 
   function downloadReport() {
     if (!result) return;
@@ -586,7 +869,7 @@ function TopActionPanel({ panel, prompt, result, onClose }) {
 
   async function shareReport() {
     if (!result) return;
-    const title = result.cadLayout?.device || "Smart Health Architecture";
+    const title = result.cadLayout?.device || concept?.title || "Smart Health Architecture";
     const text = exportMarkdown(prompt, result);
     try {
       if (navigator.share) {
@@ -622,7 +905,7 @@ function TopActionPanel({ panel, prompt, result, onClose }) {
           <h3><Search size={20} />Retrieval Grounding</h3>
           <p>The design assistant uses retrieval-augmented generation, so it gathers relevant outside evidence before asking the LLM to propose a design.</p>
           <div className="list-row"><Database size={16} /><span><strong>PrimeKG</strong><small>Matches the disease to a local biomedical knowledge graph, then retrieves related phenotypes, genes/proteins, and anatomy.</small></span></div>
-          <div className="list-row"><BookOpen size={16} /><span><strong>Semantic Scholar</strong><small>Searches biomedical literature for papers related to the disease, symptom, device intent, and monitoring goal.</small></span></div>
+          <div className="list-row"><BookOpen size={16} /><span><strong>Semantic Scholar + Europe PMC</strong><small>Searches biomedical literature for papers related to the disease, symptom, device intent, and monitoring goal.</small></span></div>
           <div className="list-row"><ClipboardList size={16} /><span><strong>Guideline RAG</strong><small>Searches local embedded chunks from MedlinePlus, ONC SAFER Guides, and USCDI for common clinical and interoperability guidance.</small></span></div>
           <div className="list-row"><ShieldCheck size={16} /><span><strong>Grounded generation</strong><small>The proposal is instructed to cite only retrieved graph nodes, papers, guideline excerpts, and standards references.</small></span></div>
         </>
@@ -784,19 +1067,82 @@ function KnowledgePage() {
       <aside className="right-rail">
         <Donut />
         <Panel title="Source Types" icon={Layers} items={sourceTypes.map(({ title, badge }) => `${title}: ${badge}`)} />
-        <Panel title="Summary" icon={Check} items={["PrimeKG and guideline stores are local SQLite files", "Semantic Scholar and PubTator3 are live API calls", "Standards are metadata-only verify-against references"]} />
+        <Panel title="Summary" icon={Check} items={["PrimeKG and guideline stores are local SQLite files", "Semantic Scholar, Europe PMC, and PubTator3 are live API calls", "Standards are metadata-only verify-against references"]} />
       </aside>
     </div>
   );
 }
 
-function NewDesignPage({ result, onResult, onOpenResults }) {
+function TargetSelectionPage({ value, onSelect }) {
+  return (
+    <div className="setup-page">
+      <section className="setup-hero">
+        <span className="phase-pill">Setup</span>
+        <h1>Pick the ideation target.</h1>
+        <p>Choose what kind of product direction the system should explore before you decide whether to run the full architecture-to-engineering workflow.</p>
+      </section>
+      <div className="choice-grid setup-choice-grid">
+        {ideationTargets.map(({ id, icon: Icon, title, description }) => (
+          <button className={value === id ? "choice-card selected" : "choice-card"} key={id} onClick={() => onSelect(id)}>
+            <Icon size={48} />
+            <span>{title}</span>
+            <p>{description}</p>
+            <i />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WorkflowSelectionPage({ value, target, onSelect, onBack }) {
+  const targetLabel = ideationTargets.find((item) => item.id === target)?.title || "Design";
+  return (
+    <div className="setup-page">
+      <section className="setup-hero">
+        <span className="phase-pill">{targetLabel}</span>
+        <h1>Choose the workflow depth.</h1>
+        <p>Phase 1 is concept ideation, trade-offs, viewpoints, evidence, and human review. Phase 2 is engineering specs, constraints, and CAD workspace output.</p>
+      </section>
+      <div className="workflow-grid">
+        {workflowModes.map(({ id, title, label, icon: Icon, description }) => (
+          <button className={value === id ? "workflow-card selected" : "workflow-card"} key={id} onClick={() => onSelect(id)}>
+            <Icon size={34} />
+            <span>{label}</span>
+            <strong>{title}</strong>
+            <p>{description}</p>
+          </button>
+        ))}
+      </div>
+      <button className="ghost setup-back" onClick={onBack}>Back to target</button>
+    </div>
+  );
+}
+
+function NewDesignPage({ ideationTarget, workflowMode, result, onResult, onDirectCadResult, onOpenResults }) {
   const [prompt, setPrompt] = useState("");
   const [promptAudience, setPromptAudience] = useState("common");
+  const [numOptions, setNumOptions] = useState(3);
+  const [supportFiles, setSupportFiles] = useState([]);
   const [status, setStatus] = useState("idle");
+  const [generationStep, setGenerationStep] = useState(0);
   const [error, setError] = useState(null);
-  const isComplete = Boolean(result?.cadLayout);
+  const isComplete = hasIdeation(result);
   const activeAudience = promptAudiences.find((item) => item.id === promptAudience) || promptAudiences[0];
+  const targetLabel = ideationTargets.find((item) => item.id === ideationTarget)?.title || "CAD Design";
+  const workflowLabel = workflowModes.find((item) => item.id === workflowMode)?.label || "Phase 1 + Phase 2";
+  const isPhase2Only = workflowMode === "phase2";
+
+  useEffect(() => {
+    if (status !== "loading") {
+      setGenerationStep(0);
+      return undefined;
+    }
+    const timers = [900, 2400, 5200, 9200].map((delay, index) => (
+      setTimeout(() => setGenerationStep(index + 1), delay)
+    ));
+    return () => timers.forEach(clearTimeout);
+  }, [status]);
 
   async function runDesignSearch(event) {
     event.preventDefault();
@@ -808,17 +1154,22 @@ function NewDesignPage({ result, onResult, onOpenResults }) {
     onResult("", null);
 
     try {
-      const response = await fetch("http://127.0.0.1:3001/api/design-search", {
+      const documents = await filesToDocuments(supportFiles);
+      const response = await fetch(`http://127.0.0.1:3001${isPhase2Only ? "/api/direct-cad" : "/api/design-search"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: trimmed, audience: promptAudience })
+        body: JSON.stringify({ prompt: trimmed, audience: promptAudience, numOptions, documents, ideationTarget, workflowMode })
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || data.error || "Design search failed");
-      onResult(trimmed, data);
+      if (!response.ok) throw new Error(data.detail || data.error || (isPhase2Only ? "Direct CAD generation failed" : "Design search failed"));
+      if (isPhase2Only) {
+        onDirectCadResult(trimmed, data);
+      } else {
+        onResult(trimmed, data);
+      }
       setStatus("idle");
     } catch (err) {
-      setError(requestErrorMessage(err, "Design search failed"));
+      setError(requestErrorMessage(err, isPhase2Only ? "Direct CAD generation failed" : "Design search failed"));
       setStatus("error");
     }
   }
@@ -826,16 +1177,15 @@ function NewDesignPage({ result, onResult, onOpenResults }) {
   return (
     <div className="new-design">
       <div className="center-copy">
-        <h1>Generate a New Smart Health Design</h1>
-        <p>Describe the health need once. The workspace will retrieve evidence, reason over it, and prepare a CAD concept before unlocking the architecture page.</p>
+        <span className="phase-pill">{isPhase2Only ? "Phase 2 · Direct CAD" : "Phase 1 · Ideation"}</span>
+        <h1>{isPhase2Only ? "Describe the object you want engineered into a CAD/spec concept." : "Explore the biological theory, evidence, and possible device concepts first."}</h1>
+        <p>{isPhase2Only ? "Use this when you already know the form, like a knee sleeve, cup holder, glove, or bottle. It skips disease/literature grounding and focuses on fit, comfort, constraints, standards references, specs, and CAD preview." : "Start here before engineering specs or CAD. The system translates your need into a retrieval prompt, gathers evidence, and returns human-reviewable concept options."}</p>
+        <div className="chip-row setup-summary">
+          <span className="chip">{targetLabel}</span>
+          <span className="chip">{workflowLabel}</span>
+        </div>
       </div>
-      <h2>1. What would you like to design?</h2>
-      <div className="choice-grid">
-        {[[Box, "CAD Design"], [Cpu, "Mobile App Design"], [PackageCheck, "Both CAD & Mobile App"]].map(([Icon, title]) => (
-          <button className="choice-card" key={title}><Icon size={48} /><span>{title}</span><p>{title === "CAD Design" ? "Evidence-backed hardware concept and downloadable STL." : title === "Mobile App Design" ? "Companion workflows, monitoring screens, and data needs." : "Coordinate physical device and digital experience."}</p><i /></button>
-        ))}
-      </div>
-      <h2>2. Who is writing the prompt?</h2>
+      <h2>1. Who is writing the prompt?</h2>
       <div className="role-select-grid">
         {promptAudiences.map(({ id, label, icon: Icon, description }) => (
           <button
@@ -850,15 +1200,28 @@ function NewDesignPage({ result, onResult, onOpenResults }) {
           </button>
         ))}
       </div>
-      <h2>3. Describe your design goal</h2>
-      <div className="prompt-example"><Sparkles size={24} /><div><strong>{activeAudience.label} prompt mode</strong><p>{activeAudience.description}</p></div></div>
+      <h2>2. Describe the {isPhase2Only ? "CAD object and engineering constraints" : "health need or design goal"}</h2>
+      <div className="prompt-example"><Sparkles size={24} /><div><strong>{activeAudience.label} prompt mode</strong><p>{isPhase2Only ? "Phase 2 only accepts direct object requests with optional sizing, fit, weight, comfort, material, and use constraints." : activeAudience.description}</p></div></div>
+      <div className="ideation-controls">
+        {!isPhase2Only && <label>
+          Concept options
+          <select value={numOptions} onChange={(event) => setNumOptions(Number(event.target.value))}>
+            {[1, 2, 3, 4, 5].map((count) => <option value={count} key={count}>{count}</option>)}
+          </select>
+        </label>}
+        <label className="support-upload">
+          <CloudUpload size={18} />
+          <span>{supportFiles.length ? `${supportFiles.length} source file${supportFiles.length === 1 ? "" : "s"} attached` : "Add PDF/manual/report"}</span>
+          <input type="file" accept=".pdf,.txt,.md" multiple onChange={(event) => setSupportFiles(Array.from(event.target.files || []))} />
+        </label>
+      </div>
       <form className="composer" onSubmit={runDesignSearch}>
         <MessageSquare size={32} />
         <textarea
           aria-label="Describe your design goal"
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
-          placeholder={promptAudience === "common" ? "Example: I want something that helps someone with cystic fibrosis notice breathing trouble earlier..." : promptAudience === "doctor" ? "Example: Need a patient-friendly way to monitor dyspnea and oxygenation trends in cystic fibrosis..." : "Example: Design a non-invasive wearable system for continuously monitoring shortness of breath in patients with cystic fibrosis..."}
+          placeholder={isPhase2Only ? "Example: Generate a knee sleeve CAD concept for a 5'10 adult around 180 lb, soft breathable material, adjustable compression, easy to clean, no biological evidence needed." : promptPlaceholderFor(promptAudience)}
           rows={2}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) runDesignSearch(event);
@@ -869,8 +1232,8 @@ function NewDesignPage({ result, onResult, onOpenResults }) {
 
       {status === "loading" && (
         <div className="generation-panel">
-          <h3><RefreshCw size={20} />Generating workspace</h3>
-          <GenerationSteps />
+          <h3><RefreshCw size={20} />{isPhase2Only ? "Phase 2 CAD/spec generation is running" : "Phase 1 is running live"}</h3>
+          <GenerationSteps activeStep={generationStep} phase={isPhase2Only ? "phase2" : "phase1"} />
         </div>
       )}
       {status === "error" && (
@@ -879,47 +1242,68 @@ function NewDesignPage({ result, onResult, onOpenResults }) {
           {error}
         </div>
       )}
-      <div className={isComplete ? "results-gate ready" : "results-gate"}>
+      {!isPhase2Only && <div className={isComplete ? "results-gate ready" : "results-gate"}>
         <div>
-          <strong>{isComplete ? "Architecture is ready" : "Architecture page is locked"}</strong>
-          <p>{isComplete ? "Retrieval, proposal generation, and CAD layout are complete." : "The button activates after evidence retrieval and CAD layout generation finish."}</p>
+          <strong>{isComplete ? "Concept options are ready" : "Architecture page is locked"}</strong>
+          <p>{isComplete ? "Review the imagined device options, trade-offs, and scores before choosing one." : "The button activates after evidence retrieval and concept ideation finish."}</p>
         </div>
         <button className="primary gate-button" disabled={!isComplete} onClick={onOpenResults}>Open Architecture</button>
-      </div>
+      </div>}
     </div>
   );
 }
 
-function GenerationSteps() {
+function GenerationSteps({ activeStep = 0, phase = "phase1" }) {
+  const phase1Steps = [
+    ["Preparing context", "Reading uploaded PDFs, manuals, reports, and the user role."],
+    ["Parsing design intent", "Extracting condition, symptoms, target user, and device intent."],
+    ["Retrieving evidence", "Searching PrimeKG, PubTator, guidelines, Semantic Scholar, and Europe PMC."],
+    ["Scoring concept options", "Ranking biological fit, prior device signals, trade-offs, and human review needs."]
+  ];
+  const phase2Steps = [
+    ["Reading object request", "Checking the requested form, sizing notes, comfort needs, and uploaded references."],
+    ["Drafting engineering constraints", "Turning fit, comfort, cleaning, durability, and usability notes into specs."],
+    ["Selecting standards references", "Adding verify-against engineering standards without claiming full standard text."],
+    ["Building CAD preview", "Creating component specs and the 3D workspace preview."]
+  ];
+  const steps = phase === "phase2" ? phase2Steps : phase1Steps;
   return (
     <div className="generation-steps">
-      {["Extracting disease, symptom, and device intent", "Resolving disease terminology", "Retrieving graph, literature, and guideline evidence", "Generating proposal and CAD component layout"].map((step) => (
-        <div className="generation-step" key={step}><span className="status-dot" />{step}</div>
+      {steps.map(([step, detail], index) => (
+        <div className={index < activeStep ? "generation-step complete" : index === activeStep ? "generation-step active" : "generation-step"} key={step}>
+          <span className="status-dot" />
+          <strong>{step}</strong>
+          <small>{detail}</small>
+        </div>
       ))}
     </div>
   );
 }
 
-function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
-  const [audience, setAudience] = useState("common");
+function DesignResultsPage({ prompt, result, accepted, evidenceViewpoint, onEvidenceViewpointChange, onOpenEvidence, onOpenSolutions, onRefined, onAccept }) {
   const [refineAudience, setRefineAudience] = useState(result?.promptProfile?.role || "common");
   const [refinement, setRefinement] = useState("");
+  const [supportFiles, setSupportFiles] = useState([]);
+  const [selectedConceptId, setSelectedConceptId] = useState(result?.selectedConcept?.id || result?.ideation?.recommendedOptionId || result?.ideation?.options?.[0]?.id || "");
   const [refineStatus, setRefineStatus] = useState("idle");
   const [refineError, setRefineError] = useState(null);
   const activeRefineAudience = promptAudiences.find((item) => item.id === refineAudience) || promptAudiences[0];
+  const conceptOptions = result?.ideation?.options || [];
+  const selectedConcept = conceptOptions.find((option) => option.id === selectedConceptId) || conceptOptions[0] || null;
 
-  if (!result?.cadLayout) {
+  useEffect(() => {
+    setSelectedConceptId(result?.selectedConcept?.id || result?.ideation?.recommendedOptionId || result?.ideation?.options?.[0]?.id || "");
+  }, [result]);
+
+  if (!conceptOptions.length) {
     return (
       <div className="empty-results">
         <Box size={42} />
-        <h1>No completed design yet</h1>
-        <p>Run a New Design search first. This page unlocks once the evidence and CAD concept are both complete.</p>
+        <h1>No concept options yet</h1>
+        <p>Run a New Design search first. This page unlocks once the evidence retrieval and concept ideation are complete.</p>
       </div>
     );
   }
-
-  const { kgGrounded, subgraph, literature, guidelines, standardsReferenced, proposal, warnings } = result;
-  const isProfessional = audience === "professional";
 
   async function submitRefinement(event) {
     event.preventDefault();
@@ -929,15 +1313,17 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
     setRefineStatus("loading");
     setRefineError(null);
     try {
+      const documents = await filesToDocuments(supportFiles);
       const response = await fetch("http://127.0.0.1:3001/api/design-refine", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: trimmed, audience: refineAudience, previousPrompt: prompt, previousResult: result })
+        body: JSON.stringify({ prompt: trimmed, audience: refineAudience, documents, previousPrompt: prompt, previousResult: result })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || data.error || "Design refinement failed");
       onRefined(data);
       setRefinement("");
+      setSupportFiles([]);
       setRefineStatus("idle");
     } catch (err) {
       setRefineError(requestErrorMessage(err, "Design refinement failed"));
@@ -949,11 +1335,12 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
     <div className="generated-page">
       <section className="generated-hero">
         <div>
-          <span className="eyebrow">Generated architecture package</span>
-          <h1>{result.cadLayout.device}</h1>
+          <span className="eyebrow">Initial proposal ideation</span>
+          <h1>{result.ideation.summary || "Choose a concept direction"}</h1>
           <div className="chip-row">
             <span className="chip">{result.promptProfile?.roleLabel || "Prompt author"}</span>
-            <span className="chip">{result.cadLayout.formFactor || "auto-selected form factor"}</span>
+            <span className="chip">{conceptOptions.length} concept option{conceptOptions.length === 1 ? "" : "s"}</span>
+            {result.supplementalDocuments?.length > 0 && <span className="chip">{result.supplementalDocuments.length} uploaded source{result.supplementalDocuments.length === 1 ? "" : "s"}</span>}
           </div>
           <p>{prompt}</p>
           {result.promptProfile?.engineeringPrompt && result.promptProfile.engineeringPrompt !== prompt && (
@@ -965,58 +1352,117 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
         </div>
         <div className="completion-card">
           <CheckCircle2 size={28} />
-          <strong>{accepted ? "Accepted design" : "Draft ready for review"}</strong>
-          <span>{accepted ? "RAG Exploration and CAD Workspace are using this version." : "Refine it until it feels right, then accept it."}</span>
+          <strong>{accepted ? "Accepted concept" : "Concepts ready for review"}</strong>
+          <span>{accepted ? "RAG Exploration and CAD Workspace are using this concept." : "Pick the best direction, refine it, or upload more context."}</span>
         </div>
       </section>
 
-      <article className="panel refine-panel">
-        <h3><MessageSquare size={20} />Refine This Design</h3>
-        <div className="refine-depth-row" role="group" aria-label="Refinement prompt mode">
-          {promptAudiences.map(({ id, label, icon: Icon }) => (
-            <button
-              type="button"
-              className={refineAudience === id ? "active" : ""}
-              key={id}
-              onClick={() => setRefineAudience(id)}
-            >
-              <Icon size={16} />{label}
-            </button>
-          ))}
+      <section className="architecture-workspace">
+        <div className="architecture-concepts">
+          <section className="ideation-option-grid">
+            {conceptOptions.map((option) => (
+              <ConceptIdeationCard
+                key={option.id}
+                option={option}
+                recommended={option.id === result.ideation.recommendedOptionId}
+                selected={selectedConcept?.id === option.id}
+                onSelect={() => setSelectedConceptId(option.id)}
+              />
+            ))}
+          </section>
         </div>
-        <p className="refine-depth-note">{activeRefineAudience.description}</p>
-        <form className="refine-form" onSubmit={submitRefinement}>
-          <textarea
-            aria-label="Describe how to improve the generated design"
-            value={refinement}
-            onChange={(event) => setRefinement(event.target.value)}
-            placeholder={refineAudience === "common" ? "Example: make it smaller and easier to wear every day..." : refineAudience === "doctor" ? "Example: prioritize dyspnea trend review, oxygenation context, and patient safety alerts..." : "Example: reduce enclosure volume, switch to a patch form factor, and separate sensor, battery, and radio modules..."}
-            rows={3}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) submitRefinement(event);
-            }}
+
+        <aside className="architecture-side-rail" aria-label="Architecture controls">
+          <article className="panel refine-panel">
+            <h3><MessageSquare size={20} />Refine Ideation</h3>
+            <div className="refine-depth-row" role="group" aria-label="Refinement prompt mode">
+              {promptAudiences.map(({ id, label, icon: Icon }) => (
+                <button
+                  type="button"
+                  className={refineAudience === id ? "active" : ""}
+                  key={id}
+                  onClick={() => setRefineAudience(id)}
+                >
+                  <Icon size={16} />{label}
+                </button>
+              ))}
+            </div>
+            <p className="refine-depth-note">{activeRefineAudience.description}</p>
+            <label className="support-upload refine-upload">
+              <CloudUpload size={18} />
+              <span>{supportFiles.length ? `${supportFiles.length} source file${supportFiles.length === 1 ? "" : "s"} attached` : "Add PDF/manual/report to refine ideation"}</span>
+              <input type="file" accept=".pdf,.txt,.md" multiple onChange={(event) => setSupportFiles(Array.from(event.target.files || []))} />
+            </label>
+            <form className="refine-form rail-form" onSubmit={submitRefinement}>
+              <textarea
+                aria-label="Describe how to improve the generated design"
+                value={refinement}
+                onChange={(event) => setRefinement(event.target.value)}
+                placeholder={promptPlaceholderFor(refineAudience, "refine")}
+                rows={4}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) submitRefinement(event);
+                }}
+              />
+              <button className="primary" type="submit" disabled={refineStatus === "loading" || !refinement.trim()}>{refineStatus === "loading" ? "Improving..." : "Refine Options"}</button>
+            </form>
+            {refineError && <div className="design-status error"><span className="status-dot error" />{refineError}</div>}
+            {result.refinementHistory?.length > 0 && <p>{result.refinementHistory.length} refinement{result.refinementHistory.length === 1 ? "" : "s"} applied to this draft.</p>}
+            <button className="success accept-button" onClick={() => onAccept(selectedConcept)} disabled={accepted || !selectedConcept}>{accepted ? "Accepted" : "I Like This Concept"}</button>
+          </article>
+
+          <EvidenceRequestPanel
+            viewpoint={evidenceViewpoint}
+            onViewpointChange={onEvidenceViewpointChange}
+            onSubmit={() => onOpenEvidence(evidenceViewpoint)}
           />
-          <button className="primary" type="submit" disabled={refineStatus === "loading" || !refinement.trim()}>{refineStatus === "loading" ? "Improving..." : "Improve Design"}</button>
-        </form>
-        {refineError && <div className="design-status error"><span className="status-dot error" />{refineError}</div>}
-        {result.refinementHistory?.length > 0 && <p>{result.refinementHistory.length} refinement{result.refinementHistory.length === 1 ? "" : "s"} applied to this draft.</p>}
-        <button className="success accept-button" onClick={onAccept} disabled={accepted}>{accepted ? "Accepted" : "I Like This Design"}</button>
-      </article>
 
-      <AudienceToggle value={audience} onChange={setAudience} />
+          <article className="panel human-loop-panel">
+            <h3><Search size={20} />Previous Solutions</h3>
+            <p>Open a separate review page for prior papers, device-family clues, and similar public solution notes.</p>
+            <button className="primary evidence-only-button" type="button" onClick={() => onOpenSolutions(evidenceViewpoint)}>Open Previous Solutions</button>
+          </article>
 
-      <ArchitectureCadPanel layout={result.cadLayout} />
+          <article className="panel human-loop-panel">
+            <h3><Eye size={20} />Evidence hidden by default</h3>
+            <p>The concept cards use retrieved evidence for scoring and trade-offs, but raw evidence, clinical guidance, and prior solution details live on separate review pages.</p>
+          </article>
+        </aside>
+      </section>
+    </div>
+  );
+}
 
-      {audience === "common" && <CommonResults prompt={prompt} result={result} />}
+function EvidencePage({ prompt, result, viewpoint, onViewpointChange, onBack }) {
+  if (!result) {
+    return (
+      <div className="empty-results">
+        <FileText size={42} />
+        <h1>No evidence yet</h1>
+        <p>Run Phase 1 ideation first, then open evidence from the architecture controls.</p>
+      </div>
+    );
+  }
 
-      {isProfessional && warnings?.length > 0 && (
-        <article className="panel warnings-panel">
-          <h3><SlidersHorizontal size={20} />Warnings</h3>
-          {warnings.map((w) => <div className="list-row" key={w}>{w}</div>)}
+  const { kgGrounded, subgraph, literature = [], guidelines = [], standardsReferenced = [], proposal } = result;
+  const isPlainView = ["common", "caregiver"].includes(viewpoint);
+  return (
+    <div className="review-page">
+      <section className="generated-hero review-hero">
+        <div>
+          <span className="eyebrow">Separate evidence review</span>
+          <h1>Evidence and clinical guidance</h1>
+          <p>Evidence stays off the architecture page until a reviewer asks for it. Choose the viewpoint to control the type and depth of details shown.</p>
+        </div>
+        <article className="panel review-control-card">
+          <EvidenceRequestPanel viewpoint={viewpoint} onViewpointChange={onViewpointChange} />
+          <button className="ghost evidence-only-button" onClick={onBack}>Back to Architecture</button>
         </article>
-      )}
+      </section>
 
-      {isProfessional && <article className="panel">
+      {isPlainView && <CommonResults prompt={prompt} result={result} />}
+
+      {!isPlainView && <article className="panel">
         <h3><Database size={20} />Knowledge Graph Grounding (PrimeKG)</h3>
         {!kgGrounded && <p>No matching disease node found in PrimeKG for this prompt.</p>}
         {kgGrounded && (
@@ -1031,25 +1477,22 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
         )}
       </article>}
 
-      {isProfessional && <FormattedProposal text={proposal} />}
+      {["engineer", "researcher", "regulatory"].includes(viewpoint) && <FormattedProposal text={proposal} />}
+      <TechnicalEvidenceOptions result={result} viewpoint={viewpoint} />
 
-      {isProfessional && <TechnicalEvidenceOptions result={result} />}
-
-      {isProfessional && <SimilarSolutionsPanel result={result} />}
-
-      {isProfessional && <article className="panel">
-        <h3><BookOpen size={20} />Literature Evidence (Semantic Scholar)</h3>
+      {["doctor", "engineer", "researcher"].includes(viewpoint) && <article className="panel">
+        <h3><BookOpen size={20} />Literature Evidence</h3>
         {literature.length === 0 && <p>No papers retrieved for this prompt.</p>}
         {literature.map((paper) => (
           <div className="paper-card" key={paper.title}>
             <a href={paper.url} target="_blank" rel="noreferrer">{paper.title}</a>
-            <span>{[paper.venue, paper.year].filter(Boolean).join(" · ")}</span>
+            <span>{[paper.source, paper.venue, paper.year].filter(Boolean).join(" · ")}</span>
             {paper.abstract && <p>{paper.abstract.slice(0, 220)}...</p>}
           </div>
         ))}
       </article>}
 
-      {isProfessional && <article className="panel">
+      {["doctor", "engineer", "researcher", "regulatory"].includes(viewpoint) && <article className="panel">
         <h3><ShieldCheck size={20} />Clinical & Regulatory Guidance</h3>
         {guidelines.length === 0 && <p>No guideline excerpts retrieved for this prompt.</p>}
         <div className="solution-list">
@@ -1066,7 +1509,7 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
           ))}
         </div>
         <div className="evidence-group">
-          <h4>Standards to verify against <small>(reference only — not full-text indexed)</small></h4>
+          <h4>Standards to verify against <small>(reference only - not full-text indexed)</small></h4>
           <div className="chip-row">
             {standardsReferenced.map((s) => (
               <span className="chip" key={s.standard} title={s.title}>{s.standard}</span>
@@ -1074,6 +1517,42 @@ function DesignResultsPage({ prompt, result, accepted, onRefined, onAccept }) {
           </div>
         </div>
       </article>}
+    </div>
+  );
+}
+
+function PreviousSolutionsPage({ result, viewpoint, onViewpointChange, onBack }) {
+  if (!result) {
+    return (
+      <div className="empty-results">
+        <Search size={42} />
+        <h1>No previous solutions yet</h1>
+        <p>Run Phase 1 ideation first, then open previous solutions from the architecture controls.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="review-page">
+      <section className="generated-hero review-hero">
+        <div>
+          <span className="eyebrow">Separate solution review</span>
+          <h1>Similar or previous solutions</h1>
+          <p>Prior solution notes live here so the architecture page can stay focused on concept comparison and refinement.</p>
+        </div>
+        <article className="panel review-control-card">
+          <h3><Eye size={20} />Reviewer Viewpoint</h3>
+          <div className="viewpoint-grid" role="group" aria-label="Previous solution viewpoint">
+            {evidenceViewpoints.filter((item) => ["doctor", "engineer", "researcher", "regulatory"].includes(item.id)).map(({ id, label, icon: Icon }) => (
+              <button type="button" className={viewpoint === id ? "active" : ""} key={id} onClick={() => onViewpointChange(id)}>
+                <Icon size={16} />{label}
+              </button>
+            ))}
+          </div>
+          <button className="ghost evidence-only-button" onClick={onBack}>Back to Architecture</button>
+        </article>
+      </section>
+      <SimilarSolutionsPanel result={result} />
     </div>
   );
 }
@@ -1101,14 +1580,16 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
         <div className="completion-card">
           <History size={28} />
           <strong>{acceptedVersionId ? "Accepted version selected" : "No accepted version yet"}</strong>
-          <span>{acceptedVersionId ? "RAG and CAD are using the version marked Accepted." : "Use I Like This Design here or on the architecture page."}</span>
+              <span>{acceptedVersionId ? "RAG and CAD are using the concept marked Accepted." : "Use I Like This Concept here or on the architecture page."}</span>
         </div>
       </section>
 
       <section className="history-list">
         {[...history].reverse().map((item) => {
+          const concept = activeConcept(item.result);
           const layout = item.result?.cadLayout || {};
           const components = layout.components || [];
+          const optionCount = item.result?.ideation?.options?.length || 0;
           const isCurrent = currentVersionId === item.id;
           const isAccepted = acceptedVersionId === item.id;
           return (
@@ -1116,13 +1597,13 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
               <div className="history-card-header">
                 <div>
                   <span className="eyebrow">Version {item.version}</span>
-                  <h2>{layout.device || "Generated architecture"}</h2>
+                  <h2>{concept?.title || layout.device || "Generated architecture"}</h2>
                   <p>{item.kind} {item.createdAt ? `on ${new Date(item.createdAt).toLocaleString()}` : ""}</p>
                 </div>
                 <div className="history-badges">
                   {isAccepted && <span className="chip success-chip"><Check size={13} />Accepted</span>}
                   {isCurrent && <span className="chip">Current draft</span>}
-                  <span className="chip">{layout.formFactor || "Auto form factor"}</span>
+                  <span className="chip">{concept?.formFactor || layout.formFactor || "Auto form factor"}</span>
                 </div>
               </div>
 
@@ -1141,8 +1622,9 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
                   </div>
                 )}
                 <div>
-                  <strong>CAD components</strong>
-                  <p>{components.length ? components.map((component) => component.type).join(", ") : "No components generated."}</p>
+                  <strong>{components.length ? "CAD components" : "Concept options"}</strong>
+                  <p>{components.length ? components.map((component) => component.type).join(", ") : `${optionCount} ideation option${optionCount === 1 ? "" : "s"} generated.`}</p>
+                  {concept && <small>Selected concept: {concept.title} ({evidenceLabel(concept.evidenceStrength?.overall || 0)} evidence strength)</small>}
                 </div>
                 <div>
                   <strong>Evidence included</strong>
@@ -1152,7 +1634,7 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
 
               <div className="history-actions">
                 <button className="primary" onClick={() => onOpenVersion(item)}>Review Version</button>
-                <button className="success" onClick={() => onAcceptVersion(item)} disabled={isAccepted}>{isAccepted ? "Accepted" : "I Like This Design"}</button>
+                <button className="success" onClick={() => onAcceptVersion(item)} disabled={isAccepted}>{isAccepted ? "Accepted" : "I Like This Concept"}</button>
               </div>
             </article>
           );
@@ -1162,15 +1644,326 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
   );
 }
 
+function ConceptIdeationCard({ option, recommended, selected, onSelect }) {
+  const score = option.evidenceStrength?.overall ?? 0;
+  return (
+    <article className={selected ? "concept-option-card selected" : "concept-option-card"}>
+      <div className="concept-card-header">
+        <div>
+          <span className="eyebrow">{recommended ? "Recommended" : option.formFactor}</span>
+          <h2>{option.title}</h2>
+        </div>
+        <div className="score-ring" style={{ "--score": `${score}%` }}>
+          <span>{score}</span>
+        </div>
+      </div>
+      <ConceptIllustration formFactor={option.formFactor} title={option.title} />
+      <p>{option.plainDescription}</p>
+      <div className="evidence-strength-bars">
+        {Object.entries(option.evidenceStrength || {}).map(([label, value]) => (
+          <div key={label}>
+            <span>{label}</span>
+            <strong>{evidenceLabel(value)}</strong>
+            <i style={{ "--bar": `${clampUiScore(value)}%` }} />
+          </div>
+        ))}
+      </div>
+      <div className="tradeoff-list">
+        {(option.tradeoffs || []).slice(0, 3).map((tradeoff) => (
+          <div key={`${option.id}-${tradeoff.label}`}>
+            <strong>{tradeoff.label}</strong>
+            <span>{tradeoff.rating}</span>
+            <small>{tradeoff.detail}</small>
+          </div>
+        ))}
+      </div>
+      <div className="concept-action-row">
+        <button className={selected ? "success" : "primary"} onClick={onSelect}>{selected ? "Selected" : "Select Concept"}</button>
+      </div>
+    </article>
+  );
+}
+
+function EvidenceRequestPanel({ viewpoint, onViewpointChange, onSubmit, actionLabel = "Open Evidence Page" }) {
+  const activeView = evidenceViewpoints.find((item) => item.id === viewpoint) || evidenceViewpoints[0];
+
+  return (
+    <article className="panel evidence-request-panel">
+      <h3><BookOpen size={20} />Evidence View</h3>
+      <div className="viewpoint-grid" role="group" aria-label="Evidence viewpoint">
+        {evidenceViewpoints.map(({ id, label, icon: Icon }) => (
+          <button type="button" className={viewpoint === id ? "active" : ""} key={id} onClick={() => onViewpointChange(id)}>
+            <Icon size={16} />{label}
+          </button>
+        ))}
+      </div>
+      <p>{activeView.description}</p>
+      {onSubmit && <button className="primary evidence-only-button" type="button" onClick={onSubmit}>{actionLabel}</button>}
+    </article>
+  );
+}
+
+function clampUiScore(value) {
+  const score = Number(value);
+  if (!Number.isFinite(score)) return 0;
+  return Math.max(0, Math.min(100, score));
+}
+
+function ConceptIllustration({ formFactor, title }) {
+  const normalized = String(formFactor || "").toLowerCase();
+  return (
+    <div className={`concept-image concept-image-${normalized.replace(/[^a-z0-9]+/g, "-") || "generic"}`}>
+      <Canvas camera={{ position: [2.8, 2.1, 3.2], fov: 42 }}>
+        <ambientLight intensity={0.72} />
+        <directionalLight position={[3, 4, 3]} intensity={1.1} />
+        <ConceptPreviewShape formFactor={normalized} />
+        <OrbitControls enableZoom={false} enablePan={false} autoRotate autoRotateSpeed={1.2} />
+      </Canvas>
+      <div className="concept-image-caption">
+        <span>{formFactor || "Concept"}</span>
+        <small>{title}</small>
+      </div>
+    </div>
+  );
+}
+
+function ConceptPreviewShape({ formFactor }) {
+  const cyan = "#08c9d6";
+  const blue = "#2d86ff";
+  const green = "#41c96b";
+  const yellow = "#f3bc26";
+  const purple = "#9b55e6";
+  const elongatedObject = /\b(sword|blade|stick|cane|bat|wand|rod|bar|club|racket)\b/.test(formFactor);
+  const shell = formFactor.includes("mouth") || formFactor.includes("retainer") ? yellow
+    : elongatedObject ? yellow
+    : formFactor.includes("holder") ? purple
+    : formFactor.includes("glove") ? green
+    : formFactor.includes("bottle") ? blue
+    : formFactor.includes("cup") ? blue
+    : formFactor.includes("patch") ? green
+    : formFactor.includes("cast") ? purple
+    : formFactor.includes("clip") ? cyan
+    : blue;
+
+  if (formFactor.includes("mouth") || formFactor.includes("retainer")) {
+    return (
+      <group rotation={[0.45, 0, 0]}>
+        <mesh scale={[1.45, 0.72, 0.16]}>
+          <torusGeometry args={[0.78, 0.08, 18, 80, Math.PI * 1.35]} />
+          <meshStandardMaterial color={shell} metalness={0.18} roughness={0.35} />
+        </mesh>
+        <mesh position={[0.18, -0.25, 0.02]} scale={[0.55, 0.16, 0.08]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={cyan} metalness={0.25} roughness={0.35} />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (elongatedObject) {
+    return (
+      <group rotation={[0.22, -0.48, 0.18]}>
+        <mesh position={[0, 0.28, 0]} scale={[0.14, 1.45, 0.055]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={shell} metalness={0.28} roughness={0.32} />
+        </mesh>
+        <mesh position={[0, 1.1, 0]} scale={[0.18, 0.3, 0.06]}>
+          <coneGeometry args={[1, 1, 4]} />
+          <meshStandardMaterial color={shell} metalness={0.28} roughness={0.32} />
+        </mesh>
+        <mesh position={[0, -0.62, 0.02]} scale={[0.82, 0.11, 0.08]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={cyan} metalness={0.22} roughness={0.36} />
+        </mesh>
+        <mesh position={[0, -1.02, 0]} scale={[0.16, 0.6, 0.1]}>
+          <cylinderGeometry args={[1, 1, 1, 24]} />
+          <meshStandardMaterial color={blue} metalness={0.18} roughness={0.42} />
+        </mesh>
+        <mesh position={[0.18, -0.92, 0.12]} scale={[0.08, 0.08, 0.04]}>
+          <sphereGeometry args={[1, 18, 12]} />
+          <meshStandardMaterial color={green} emissive={green} emissiveIntensity={0.12} />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (formFactor.includes("holder")) {
+    return (
+      <group rotation={[0.34, -0.55, 0.08]}>
+        <mesh position={[0, 0.18, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <torusGeometry args={[0.78, 0.09, 18, 64]} />
+          <meshStandardMaterial color={shell} metalness={0.2} roughness={0.36} />
+        </mesh>
+        <mesh position={[0, -0.42, 0]} rotation={[Math.PI / 2, 0, 0]}>
+          <cylinderGeometry args={[0.68, 0.68, 0.12, 42]} />
+          <meshStandardMaterial color={blue} metalness={0.18} roughness={0.42} />
+        </mesh>
+        <mesh position={[0.88, -0.06, 0]} rotation={[0, Math.PI / 2, 0]}>
+          <torusGeometry args={[0.28, 0.055, 16, 42]} />
+          <meshStandardMaterial color={cyan} />
+        </mesh>
+        <mesh position={[0.28, 0.08, 0.54]} scale={[0.16, 0.16, 0.08]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={yellow} emissive={yellow} emissiveIntensity={0.14} />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (formFactor.includes("glove")) {
+    return (
+      <group rotation={[0.45, -0.32, 0.12]}>
+        <mesh position={[0, -0.22, 0]} scale={[0.72, 0.62, 0.12]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={shell} metalness={0.08} roughness={0.52} />
+        </mesh>
+        {[-0.36, -0.12, 0.12, 0.36].map((x, index) => (
+          <mesh key={x} position={[x, 0.45, 0]} scale={[0.13, 0.52 - index * 0.03, 0.1]}>
+            <boxGeometry args={[1, 1, 1]} />
+            <meshStandardMaterial color={shell} metalness={0.08} roughness={0.52} />
+          </mesh>
+        ))}
+        <mesh position={[-0.58, -0.08, 0]} rotation={[0, 0, -0.65]} scale={[0.13, 0.46, 0.1]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={shell} metalness={0.08} roughness={0.52} />
+        </mesh>
+        <mesh position={[0.05, -0.18, 0.14]} scale={[0.28, 0.18, 0.055]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={cyan} emissive={cyan} emissiveIntensity={0.08} />
+        </mesh>
+        <mesh position={[0.12, 0.5, 0.14]} scale={[0.08, 0.08, 0.05]}>
+          <sphereGeometry args={[1, 18, 12]} />
+          <meshStandardMaterial color={yellow} />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (formFactor.includes("bottle") || formFactor.includes("cup")) {
+    return (
+      <group rotation={[0.15, -0.35, 0]}>
+        <mesh position={[0, -0.08, 0]} scale={[0.48, 1.18, 0.48]}>
+          <cylinderGeometry args={[0.55, 0.42, 1.6, 36]} />
+          <meshStandardMaterial color={shell} metalness={0.18} roughness={0.36} transparent opacity={0.82} />
+        </mesh>
+        <mesh position={[0, 0.86, 0]} scale={[0.34, 0.28, 0.34]}>
+          <cylinderGeometry args={[0.48, 0.48, 0.55, 32]} />
+          <meshStandardMaterial color={cyan} metalness={0.28} roughness={0.3} />
+        </mesh>
+        <mesh position={[0.38, 0.1, 0.08]} scale={[0.2, 0.2, 0.05]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={yellow} emissive={yellow} emissiveIntensity={0.16} />
+        </mesh>
+        <mesh position={[-0.32, -0.35, 0.08]} scale={[0.16, 0.16, 0.05]}>
+          <sphereGeometry args={[1, 24, 16]} />
+          <meshStandardMaterial color={green} />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (formFactor.includes("patch")) {
+    return (
+      <group rotation={[0.35, -0.25, 0.15]}>
+        <mesh scale={[1.65, 0.92, 0.12]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={shell} metalness={0.12} roughness={0.48} />
+        </mesh>
+        <mesh position={[0, 0, 0.13]} scale={[0.58, 0.42, 0.09]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={blue} metalness={0.3} roughness={0.38} />
+        </mesh>
+        <mesh position={[0.48, 0.22, 0.24]} scale={[0.14, 0.14, 0.14]}>
+          <sphereGeometry args={[1, 24, 16]} />
+          <meshStandardMaterial color={yellow} emissive={yellow} emissiveIntensity={0.18} />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (formFactor.includes("cast")) {
+    return (
+      <group rotation={[0.2, 0.45, -0.12]}>
+        <mesh scale={[0.55, 0.55, 1.55]}>
+          <cylinderGeometry args={[0.55, 0.68, 1.65, 34, 1, true]} />
+          <meshStandardMaterial color={shell} metalness={0.08} roughness={0.62} />
+        </mesh>
+        <mesh position={[0.56, 0, 0.25]} scale={[0.18, 0.18, 0.32]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={cyan} />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (formFactor.includes("clip")) {
+    return (
+      <group rotation={[0.35, -0.55, 0.06]}>
+        <mesh position={[-0.25, 0, 0]} scale={[0.38, 0.92, 0.24]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={shell} metalness={0.24} roughness={0.34} />
+        </mesh>
+        <mesh position={[0.28, 0, 0]} scale={[0.18, 0.82, 0.18]}>
+          <torusGeometry args={[0.75, 0.08, 18, 48]} />
+          <meshStandardMaterial color={blue} />
+        </mesh>
+      </group>
+    );
+  }
+
+  if (formFactor.includes("handheld")) {
+    return (
+      <group rotation={[0.25, -0.45, 0.08]}>
+        <mesh scale={[0.78, 1.35, 0.18]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={shell} metalness={0.18} roughness={0.42} />
+        </mesh>
+        <mesh position={[0, 0.28, 0.13]} scale={[0.48, 0.42, 0.04]}>
+          <boxGeometry args={[1, 1, 1]} />
+          <meshStandardMaterial color={cyan} emissive={cyan} emissiveIntensity={0.1} />
+        </mesh>
+        <mesh position={[0, -0.48, 0.14]} scale={[0.16, 0.16, 0.06]}>
+          <cylinderGeometry args={[1, 1, 1, 28]} />
+          <meshStandardMaterial color={yellow} />
+        </mesh>
+      </group>
+    );
+  }
+
+  return (
+    <group rotation={[0.35, -0.35, 0.1]}>
+      <mesh scale={[1.15, 0.62, 0.18]}>
+        <boxGeometry args={[1, 1, 1]} />
+        <meshStandardMaterial color={shell} metalness={0.18} roughness={0.38} />
+      </mesh>
+      <mesh position={[0.62, 0, 0.08]} scale={[0.18, 0.18, 0.18]}>
+        <sphereGeometry args={[1, 24, 16]} />
+        <meshStandardMaterial color={green} />
+      </mesh>
+    </group>
+  );
+}
+
+function SmileLikeIcon({ size = 24 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 9c1.8 3.5 4.4 5.2 8 5.2S18.2 12.5 20 9" />
+      <path d="M7 10.5c.4 3.3 2 5 5 5s4.6-1.7 5-5" />
+      <path d="M8 7.5h8" />
+    </svg>
+  );
+}
+
 function AudienceToggle({ value, onChange }) {
   return (
     <article className="panel audience-panel">
-      <h3><Eye size={20} />Result Detail Level</h3>
-      <div className="segmented-control" role="group" aria-label="Result detail level">
+      <h3><Eye size={20} />Evidence Viewpoint</h3>
+      <div className="segmented-control tri-control" role="group" aria-label="Result detail level">
         <button className={value === "common" ? "active" : ""} onClick={() => onChange("common")}>Common user</button>
-        <button className={value === "professional" ? "active" : ""} onClick={() => onChange("professional")}>Professional</button>
+        <button className={value === "doctor" ? "active" : ""} onClick={() => onChange("doctor")}>Doctor</button>
+        <button className={value === "engineer" ? "active" : ""} onClick={() => onChange("engineer")}>Engineer</button>
       </div>
-      <p>{value === "common" ? "Shows the CAD concept and plain-language summary without detailed evidence tables." : "Shows citations, genes/proteins, phenotypes, guidelines, standards, and CAD rationale."}</p>
+      <p>{value === "common" ? "Shows plain-language context and review notes without the full evidence tables." : value === "doctor" ? "Shows clinical guidance, phenotype context, and literature details for clinician review." : "Shows components, standards references, engineering trade-offs, and retrieved technical evidence."}</p>
     </article>
   );
 }
@@ -1296,7 +2089,7 @@ function commonUserInfo(result) {
   const solutions = papers.length
     ? papers.map((paper) => ({
         title: paper.title,
-        source: [paper.venue, paper.year].filter(Boolean).join(" | ") || "Semantic Scholar",
+        source: [paper.source, paper.venue, paper.year].filter(Boolean).join(" | ") || "Literature source",
         detail: paper.abstract
           ? `A related public paper was found. In simple terms, it may help compare this design idea with prior research: ${plainSnippet(paper.abstract, 150)}`
           : "A related public paper was found. Open the cited source for details.",
@@ -1349,12 +2142,14 @@ function commonSummary(prompt, result) {
   const condition = result.extraction?.disease ? ` for people with ${result.extraction.disease}` : "";
   const symptom = result.extraction?.symptomPhrase ? ` related to ${result.extraction.symptomPhrase}` : "";
   const intent = result.extraction?.deviceIntent || "smart health monitoring";
-  const componentCount = result.cadLayout?.components?.length || 0;
-  return `This generated concept proposes a ${intent}${condition}${symptom}. The CAD preview shows a simple wearable-style design with ${componentCount} main parts, meant to help communicate the idea visually. It is a starting point for discussion, not a finished medical device.`;
+  const concept = activeConcept(result);
+  const optionCount = result.ideation?.options?.length || 0;
+  const conceptText = concept ? ` The currently selected idea is ${concept.title}, a ${concept.formFactor || "device"} concept.` : "";
+  return `This early architecture explores ${optionCount || "multiple"} possible ${intent} device idea${optionCount === 1 ? "" : "s"}${condition}${symptom}.${conceptText} These are concept images and trade-off summaries for discussion, not finished medical devices or CAD specifications.`;
 }
 
-function TechnicalEvidenceOptions({ result }) {
-  const groups = [
+function TechnicalEvidenceOptions({ result, viewpoint = "engineer" }) {
+  const allGroups = [
     {
       title: "Cited Papers",
       icon: BookOpen,
@@ -1394,22 +2189,40 @@ function TechnicalEvidenceOptions({ result }) {
       ]
     }
   ];
+  const allowedByViewpoint = {
+    common: ["Definitions", "Guidelines & Standards"],
+    caregiver: ["Definitions", "Guidelines & Standards"],
+    doctor: ["Definitions", "Phenotypes & Anatomy", "Cited Papers", "Guidelines & Standards"],
+    engineer: ["Definitions", "Genes / Proteins", "Phenotypes & Anatomy", "Guidelines & Standards"],
+    researcher: ["Cited Papers", "Genes / Proteins", "Phenotypes & Anatomy", "Definitions"],
+    regulatory: ["Definitions", "Guidelines & Standards"]
+  };
+  const groups = allGroups.filter((group) => (allowedByViewpoint[viewpoint] || allowedByViewpoint.engineer).includes(group.title));
+  const maxItems = {
+    common: 3,
+    caregiver: 4,
+    doctor: 8,
+    engineer: 10,
+    researcher: 14,
+    regulatory: 8
+  }[viewpoint] || 8;
 
   return (
     <article className="panel evidence-options-panel">
-      <h3><ClipboardList size={20} />Technical Evidence Options</h3>
+      <h3><ClipboardList size={20} />Evidence For {evidenceViewpoints.find((item) => item.id === viewpoint)?.label || "Reviewer"}</h3>
       <div className="evidence-options">
         {groups.map(({ title, icon: Icon, items }) => (
           <details key={title}>
             <summary><Icon size={18} />{title}<span>{items.length}</span></summary>
             <div className="option-list">
               {items.length === 0 && <p>No items retrieved.</p>}
-              {items.map((item, index) => (
+              {items.slice(0, maxItems).map((item, index) => (
                 <div className="option-row" key={`${title}-${item.label}-${index}`}>
                   <strong>{item.label}</strong>
                   <small>{item.detail}</small>
                 </div>
               ))}
+              {items.length > maxItems && <p>Showing {maxItems} of {items.length} items for this viewpoint.</p>}
             </div>
           </details>
         ))}
@@ -1538,7 +2351,7 @@ function evidenceMetrics(result) {
     `Graph Nodes ${graphCount}`,
     `Papers ${result.literature?.length || 0}`,
     `Guidelines ${result.guidelines?.length || 0}`,
-    `CAD Parts ${result.cadLayout?.components?.length || 0}`
+    result.cadLayout ? `CAD Parts ${result.cadLayout.components?.length || 0}` : `Concept Options ${result.ideation?.options?.length || 0}`
   ];
 }
 
@@ -1554,17 +2367,17 @@ function evidenceItems(result) {
 }
 
 function cadLayerItems(result) {
-  if (!result?.cadLayout?.components?.length) return ["No generated CAD components yet."];
+  if (!result?.cadLayout?.components?.length) return ["Engineering specs will appear after proceeding from the accepted concept."];
   const dimensions = formatDimensions(result.cadLayout.dimensions);
   return [
     `${result.cadLayout.formFactor || "Auto-selected"} geometry family${dimensions ? ` - ${dimensions}` : ""}`,
-    ...result.cadLayout.components.map((component) => `${component.type}: ${[component.material, component.placement].filter(Boolean).join(" - ")}`)
+    ...result.cadLayout.components.map((component) => `${component.type}: ${[component.material, component.placement].filter(Boolean).join(" - ")}${component.impact ? ` | ${component.impactLabel || "Impact"} ${component.impact}/100` : ""}`)
   ];
 }
 
 function cadEvidenceItems(result) {
-  if (!result?.cadLayout?.components?.length) return ["Run a New Design search to generate component evidence."];
-  return result.cadLayout.components.map((component) => `${component.type}: ${component.groundedIn}`);
+  if (!result?.cadLayout?.components?.length) return ["Proceed to CAD Design to create component-level specs and evidence links."];
+  return result.cadLayout.components.map((component) => `${component.type}: ${component.groundedIn}${component.constraint ? ` | Constraint: ${component.constraint}` : ""}`);
 }
 
 function formatDimensions(dimensions) {
@@ -1590,7 +2403,7 @@ function cadInsightCards(result) {
   if (result.literature?.length) {
     cards.push({
       title: "Literature Support",
-      text: `${result.literature.length} Semantic Scholar papers were retrieved for the disease, symptom, and device intent.`,
+      text: `${result.literature.length} literature records were retrieved for the disease, symptom, and device intent.`,
       impact: "Retrieved"
     });
   }
@@ -1619,12 +2432,14 @@ function ExplorePage({ prompt, result, onOpenCad }) {
   }
 
   const metrics = evidenceMetrics(result);
-  const components = result.cadLayout?.components || [];
+  const conceptOptions = result.ideation?.options || [];
+  const selectedConcept = activeConcept(result);
+  const selectedTradeoffs = selectedConcept?.tradeoffs || [];
 
   return (
     <div className="explore-page">
       <section className="explore-overview-grid">
-        <Panel title="Knowledge Sources (RAG)" icon={Search} items={["PrimeKG knowledge graph", "Semantic Scholar papers", "MedlinePlus health topics", "ONC SAFER Guides", "USCDI data classes", "Named standards references"]} />
+        <Panel title="Knowledge Sources (RAG)" icon={Search} items={["PrimeKG knowledge graph", "Semantic Scholar papers", "Europe PMC papers", "MedlinePlus health topics", "ONC SAFER Guides", "USCDI data classes", "Named standards references"]} />
         <Panel title="Extracted Prompt" icon={SlidersHorizontal} items={[
           `Prompt mode: ${result.promptProfile?.roleLabel || "Not recorded"}`,
           `Engineering search: ${result.promptProfile?.engineeringPrompt || prompt || "not recorded"}`,
@@ -1635,12 +2450,12 @@ function ExplorePage({ prompt, result, onOpenCad }) {
         <article className="panel generated-design-card">
           <h3><UserRound size={20} />Architecture</h3>
           <div className="generated-design-summary">
-            <strong>{result.cadLayout?.device || "No CAD concept generated"}</strong>
-            <span>{result.cadLayout?.formFactor || "CAD form factor pending"}</span>
-            <span>{result.kgGrounded ? "PrimeKG grounded" : "No PrimeKG match"}</span>
-            <span>{result.warnings?.length || 0} warnings</span>
+            <strong>{selectedConcept?.title || "No concept selected"}</strong>
+            <span>{selectedConcept?.formFactor || "Select a concept first"}</span>
+            {selectedConcept?.evidenceStrength?.overall != null && <span>{selectedConcept.evidenceStrength.overall}/100 overall score</span>}
+            <span>{result.kgGrounded ? "PrimeKG grounded" : "Evidence context ready"}</span>
           </div>
-          <button className="primary" disabled={!result.cadLayout} onClick={onOpenCad}>Proceed to CAD Design</button>
+          <button className="primary" disabled={!selectedConcept} onClick={onOpenCad}>Proceed to CAD Design</button>
         </article>
       </section>
 
@@ -1651,14 +2466,38 @@ function ExplorePage({ prompt, result, onOpenCad }) {
           {metrics.map((item) => <div className="metric" key={item}>{item}</div>)}
         </div>
         <div className="concept-grid">
-          {components.length > 0 ? (
-            components.map((component, index) => (
-              <Concept key={component.id} title={`Component ${index + 1}`} component={component} name={component.type} material={component.material} evidence={component.groundedIn} />
+          {conceptOptions.length > 0 ? (
+            conceptOptions.map((option, index) => (
+              <Concept
+                key={option.id}
+                title={result.ideation?.recommendedOptionId === option.id ? "Recommended Concept" : `Concept ${index + 1}`}
+                component={{ type: option.formFactor, id: option.id, placement: option.bestFor }}
+                name={option.title}
+                material={option.plainDescription}
+                evidence={`${option.evidenceStrength?.overall ?? 0}/100 evidence-backed score`}
+              />
             ))
           ) : (
-            <Concept title="Generated Concept" name={result.cadLayout?.device || "Design proposal"} material="CAD layout not available" evidence="The proposal was generated, but no CAD component layout was returned." />
+            <Concept title="Generated Concept" name="Design proposal" material="Concept options were not returned for this run." evidence="Try running a new proposal ideation." />
           )}
         </div>
+        {selectedTradeoffs.length > 0 && (
+          <article className="panel">
+            <h3><SlidersHorizontal size={20} />Selected Concept Trade-Offs</h3>
+            <div className="solution-list">
+              {selectedTradeoffs.map((tradeoff) => (
+                <details className="solution-row" key={`${selectedConcept.id}-${tradeoff.label}`}>
+                  <summary>
+                    <strong>{tradeoff.label}</strong>
+                    <span>{tradeoff.rating}</span>
+                    <p>{plainSnippet(tradeoff.detail, 170)}</p>
+                  </summary>
+                  <p>{tradeoff.detail}</p>
+                </details>
+              ))}
+            </div>
+          </article>
+        )}
         <Panel title="Rationale & Key Evidence" icon={FileText} items={evidenceItems(result)} />
         <CompareTable result={result} />
       </section>
@@ -1666,15 +2505,66 @@ function ExplorePage({ prompt, result, onOpenCad }) {
   );
 }
 
-function CadPage({ prompt, result }) {
-  const insights = cadInsightCards(result);
-  const [cadMode, setCadMode] = useState(result?.cadLayout ? "generated" : "upload");
-  const hasGeneratedCad = Boolean(result?.cadLayout);
-  const showGeneratedDetails = cadMode === "generated" && hasGeneratedCad;
+function CadPage({ prompt, result, onResultUpdate }) {
+  const selectedConcept = activeConcept(result);
+  const [cadMode, setCadMode] = useState(selectedConcept ? "generated" : "upload");
+  const [cadStatus, setCadStatus] = useState("idle");
+  const [showPreview, setShowPreview] = useState(false);
+  const [specsAccepted, setSpecsAccepted] = useState(false);
+  const [cadError, setCadError] = useState(null);
+  const [cadRefinement, setCadRefinement] = useState("");
+  const [cadRefineAudience, setCadRefineAudience] = useState("engineer");
+  const [cadSupportFiles, setCadSupportFiles] = useState([]);
+  const specLayout = useMemo(() => result?.cadLayout || buildInstantSpecLayout(result, selectedConcept), [result, selectedConcept]);
+  const hasGeneratedSpecs = Boolean(specLayout);
+  const showGeneratedDetails = cadMode === "generated" && hasGeneratedSpecs;
+  const insights = cadInsightCards({ ...result, cadLayout: specLayout });
 
   useEffect(() => {
-    if (!hasGeneratedCad && cadMode === "generated") setCadMode("upload");
-  }, [hasGeneratedCad, cadMode]);
+    if (!selectedConcept && cadMode === "generated") setCadMode("upload");
+  }, [selectedConcept, cadMode]);
+
+  useEffect(() => {
+    setShowPreview(false);
+    setSpecsAccepted(false);
+  }, [selectedConcept?.id, specLayout?.device]);
+
+  function acceptSpecs() {
+    if (!specLayout) return;
+    setSpecsAccepted(true);
+  }
+
+  function generatePreview() {
+    if (!specsAccepted) return;
+    setShowPreview(true);
+  }
+
+  async function refineCad(event) {
+    event.preventDefault();
+    const trimmed = cadRefinement.trim();
+    if (!trimmed || !specLayout || cadStatus === "loading") return;
+
+    setCadStatus("loading");
+    setCadError(null);
+    try {
+      const documents = await filesToDocuments(cadSupportFiles);
+      const response = await fetch("http://127.0.0.1:3001/api/cad-refine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: trimmed, result: { ...result, selectedConcept, cadLayout: specLayout }, audience: cadRefineAudience, documents })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || data.detail || "CAD refinement failed");
+      onResultUpdate?.(data);
+      setShowPreview(false);
+      setCadRefinement("");
+      setCadSupportFiles([]);
+      setCadStatus("idle");
+    } catch (err) {
+      setCadError(err instanceof Error ? err.message : "CAD refinement failed");
+      setCadStatus("error");
+    }
+  }
 
   return (
     <div className="cad-grid">
@@ -1682,31 +2572,144 @@ function CadPage({ prompt, result }) {
         <article className="panel cad-source-panel">
           <h3><Box size={20} />CAD Source</h3>
           <div className="segmented-control cad-source-control" role="group" aria-label="CAD source">
-            <button className={cadMode === "generated" ? "active" : ""} disabled={!hasGeneratedCad} onClick={() => setCadMode("generated")}>Generated CAD</button>
+            <button className={cadMode === "generated" ? "active" : ""} disabled={!selectedConcept} onClick={() => setCadMode("generated")}>Generated Specs</button>
             <button className={cadMode === "upload" ? "active" : ""} onClick={() => setCadMode("upload")}>Upload STL</button>
           </div>
-          <p>{cadMode === "generated" ? "Use the accepted LLM-generated CAD concept." : "Upload an STL file, then drag to rotate and scroll to zoom."}</p>
+          <p>{cadMode === "generated" ? "Use the accepted concept to create engineering specs and an enhanced 3D concept preview." : "Upload an STL file, then drag to rotate and scroll to zoom."}</p>
         </article>
         {showGeneratedDetails && (
           <>
-            <Panel title="Generated Model Layers" icon={Layers} items={cadLayerItems(result)} />
-            <Panel title="Component Evidence" icon={Gauge} items={cadEvidenceItems(result)} />
+            <Panel title="Generated Model Layers" icon={Layers} items={cadLayerItems({ ...result, cadLayout: specLayout })} />
+            <Panel title="Component Evidence" icon={Gauge} items={cadEvidenceItems({ ...result, cadLayout: specLayout })} />
           </>
         )}
       </aside>
       <section className="cad-stage">
-        {cadMode === "generated" && hasGeneratedCad ? <GeneratedCadViewer layout={result.cadLayout} prompt={prompt} /> : <StlUploadViewer />}
+        {cadMode === "generated" && specLayout && !showPreview && (
+          <SpecFirstStage
+            layout={specLayout}
+            concept={selectedConcept}
+            specsAccepted={specsAccepted}
+            onAcceptSpecs={acceptSpecs}
+            onGeneratePreview={generatePreview}
+          />
+        )}
+        {cadMode === "generated" && specLayout && showPreview && <GeneratedCadViewer layout={specLayout} prompt={prompt} />}
+        {cadMode === "generated" && !specLayout && <div className="cad-pending"><Box size={44} /><h2>Accept a concept first</h2><p>Choose a concept on Architecture before generating engineering specs.</p></div>}
+        {cadMode === "upload" && <StlUploadViewer />}
       </section>
       <aside className="right-rail cad-copy">
-        <h1>{showGeneratedDetails ? result.cadLayout.device : "Uploaded STL Workspace"}</h1>
+        <h1>{showGeneratedDetails ? specLayout.device : cadMode === "generated" ? selectedConcept?.title || "Generated CAD Workspace" : "Uploaded STL Workspace"}</h1>
         {showGeneratedDetails && prompt && <p>{prompt}</p>}
         {showGeneratedDetails && insights.length > 0 ? insights.map((card, idx) => (
           <article className="explain" key={card.title}><strong>{idx + 1}. {card.title}</strong><p>{card.text}</p><span>{card.impact}</span></article>
         )) : (
-          <article className="explain"><strong>{cadMode === "upload" ? "Inspect a custom STL" : "No generated CAD yet"}</strong><p>{cadMode === "upload" ? "Use the upload viewer to inspect an external STL model. Generated layers, evidence, and acceptance controls stay hidden in this mode." : "Run a New Design search to populate this workspace with generated layers, component evidence, and a CAD preview."}</p><span>{cadMode === "upload" ? "Upload mode" : "Waiting"}</span></article>
+          <article className="explain"><strong>{cadMode === "upload" ? "Inspect a custom STL" : "Engineering spec phase"}</strong><p>{cadMode === "upload" ? "Use the upload viewer to inspect an external STL model. Generated layers, evidence, and acceptance controls stay hidden in this mode." : "The accepted concept is expanded into text specs first, then visualized with component modules layered onto the concept form."}</p><span>{cadMode === "upload" ? "Upload mode" : "Human-gated"}</span></article>
         )}
-        {showGeneratedDetails && <div className="action-row"><button className="success">Accept Architecture</button><button className="primary">Proceed to Prototype</button></div>}
+        {showGeneratedDetails && <EngineeringSpecsPanel layout={specLayout} />}
+        {showGeneratedDetails && (
+          <article className="panel cad-refine-panel">
+            <h3><PenTool size={20} />Refine CAD</h3>
+            <div className="refine-depth-row" role="group" aria-label="CAD refinement prompt mode">
+              {promptAudiences.map(({ id, label, icon: Icon }) => (
+                <button
+                  type="button"
+                  className={cadRefineAudience === id ? "active" : ""}
+                  key={id}
+                  onClick={() => setCadRefineAudience(id)}
+                >
+                  <Icon size={16} />{label}
+                </button>
+              ))}
+            </div>
+            <p className="refine-depth-note">{(promptAudiences.find((item) => item.id === cadRefineAudience) || promptAudiences[0]).description}</p>
+            <label className="support-upload refine-upload">
+              <CloudUpload size={16} />
+              <span>{cadSupportFiles.length ? `${cadSupportFiles.length} file${cadSupportFiles.length === 1 ? "" : "s"} attached` : "Add PDF/manual/report"}</span>
+              <input type="file" accept=".pdf,.txt,.md" multiple onChange={(event) => setCadSupportFiles(Array.from(event.target.files || []).slice(0, 3))} />
+            </label>
+            <form className="refine-form cad-refine-form" onSubmit={refineCad}>
+              <textarea rows={4} value={cadRefinement} onChange={(event) => setCadRefinement(event.target.value)} placeholder="Refine dimensions, component placement, material assumptions, or constraints..." />
+              <button className="primary" disabled={!cadRefinement.trim() || cadStatus === "loading"}>{cadStatus === "loading" ? "Refining..." : "Refine Specs"}</button>
+            </form>
+            {cadError && <div className="design-status error"><span className="status-dot error" />{cadError}</div>}
+          </article>
+        )}
+        {showGeneratedDetails && (
+          <div className="action-row">
+            <button className="success" onClick={acceptSpecs}>
+              {specsAccepted ? "Specs Accepted" : "Accept Specs"}
+            </button>
+            <button className="primary" disabled={!specsAccepted} onClick={generatePreview}>
+              Generate 3D Preview
+            </button>
+          </div>
+        )}
       </aside>
+    </div>
+  );
+}
+
+function EngineeringSpecsPanel({ layout }) {
+  const components = layout?.components || [];
+  return (
+    <article className="panel engineering-specs-panel">
+      <h3><ClipboardList size={20} />Engineering Specs</h3>
+      <p>{layout?.caveat || "Specs are conceptual and require human review."}</p>
+      <div className="spec-list">
+        {components.map((component) => (
+          <details className="spec-row" key={component.id}>
+            <summary>
+              <span>
+                <strong>{component.type}</strong>
+                <small>{component.material}</small>
+              </span>
+              <b>{component.impactLabel || "Impact"} {component.impact ?? "TBD"}/100</b>
+            </summary>
+            <p><strong>Use:</strong> {component.placement || "Concept placement to be reviewed."}</p>
+            <p><strong>Constraint:</strong> {component.constraint || "Needs qualified engineering and clinical review."}</p>
+            <p><strong>Evidence link:</strong> {component.groundedIn || "Selected concept rationale."}</p>
+          </details>
+        ))}
+      </div>
+    </article>
+  );
+}
+
+function SpecFirstStage({ layout, concept, specsAccepted, onAcceptSpecs, onGeneratePreview }) {
+  const dimensionText = formatDimensions(layout.dimensions);
+  const topComponents = layout.components?.slice(0, 5) || [];
+  return (
+    <div className="spec-first-stage">
+      <span className="eyebrow">Specs before 3D design</span>
+      <h2>{layout.device}</h2>
+      <p>{concept?.professionalDescription || concept?.plainDescription || layout.caveat}</p>
+      <div className="chip-row">
+        <span className="chip">{layout.formFactor}</span>
+        {dimensionText && <span className="chip">{dimensionText}</span>}
+        <span className="chip">{topComponents.length} spec layers</span>
+      </div>
+      <div className="spec-stage-grid">
+        {topComponents.map((component) => (
+          <article key={component.id}>
+            <strong>{component.type}</strong>
+            <span>{component.placement}</span>
+            <b>{component.impactLabel || "Impact"} {component.impact ?? "TBD"}/100</b>
+          </article>
+        ))}
+      </div>
+      <div className="spec-stage-actions">
+        <button className="success" onClick={onAcceptSpecs}>
+          {specsAccepted ? <CheckCircle2 size={16} /> : <Check size={16} />}
+          {specsAccepted ? "Specs Accepted" : "Accept Specs"}
+        </button>
+        <button className="primary" disabled={!specsAccepted} onClick={onGeneratePreview}>
+          <Box size={16} />Generate Enhanced 3D Preview
+        </button>
+      </div>
+      <p className="spec-approval-note">
+        {specsAccepted ? "Specs are accepted. You can now generate the enhanced 3D preview." : "Review and accept the specs before generating the 3D preview."}
+      </p>
     </div>
   );
 }
@@ -1926,7 +2929,7 @@ function Chat({ compact }) {
       <div className="chat-header">
         <div>
           <h3>AI Co-Pilot</h3>
-          <span>{status === "loading" ? "Thinking with Ollama..." : "Ollama: llama3.2"}</span>
+          <span>{status === "loading" ? "Thinking with Ollama..." : "Ollama: gemma4"}</span>
         </div>
         <span className={status === "error" ? "status-dot error" : "status-dot"} />
       </div>
