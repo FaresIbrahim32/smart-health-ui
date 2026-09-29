@@ -24,7 +24,7 @@ async function fetchOnce(url, headers) {
 }
 
 export async function searchPapers(query, limit = 5) {
-  const apiKey = process.env.S2_API;
+  const apiKey = String(process.env.S2_API || process.env.S2_API_KEY || "").trim();
 
   const url = new URL(BASE_URL);
   url.searchParams.set("query", query);
@@ -50,6 +50,8 @@ export async function searchPapers(query, limit = 5) {
     authors: (paper.authors || []).map((a) => a.name),
     url: paper.url,
     doi: paper.externalIds?.DOI || null,
-    abstract: paper.abstract || null
+    pmid: paper.externalIds?.PubMed || null,
+    abstract: paper.abstract || null,
+    source: "Semantic Scholar"
   }));
 }

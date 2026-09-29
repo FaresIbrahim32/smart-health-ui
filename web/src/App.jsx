@@ -120,7 +120,7 @@ const sourceTypes = [
 ];
 
 const pipelineEvidence = [
-  ["Entity extraction", "Ollama gemma4 extracts disease, symptom, and device intent."],
+  ["Entity extraction", "Ollama gemma3:4b extracts disease, symptom, and device intent."],
   ["Synonym resolution", "NCBI PubTator3 canonicalizes disease names before graph lookup."],
   ["Graph grounding", "PrimeKG supplies disease, phenotype, protein, and anatomy relationships."],
   ["Literature retrieval", "Semantic Scholar and Europe PMC return paper metadata, abstracts, and URLs."],
@@ -2929,7 +2929,7 @@ function Chat({ compact }) {
       <div className="chat-header">
         <div>
           <h3>AI Co-Pilot</h3>
-          <span>{status === "loading" ? "Thinking with Ollama..." : "Ollama: gemma4"}</span>
+          <span>{status === "loading" ? "Thinking with Ollama..." : "Ollama: gemma3:4b"}</span>
         </div>
         <span className={status === "error" ? "status-dot error" : "status-dot"} />
       </div>

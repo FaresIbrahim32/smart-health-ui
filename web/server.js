@@ -23,7 +23,7 @@ try {
 
 const PORT = Number(process.env.SMART_HEALTH_API_PORT || 3001);
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma4:latest";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma3:4b";
 const OLLAMA_CHAT_TIMEOUT_MS = Number(process.env.OLLAMA_CHAT_TIMEOUT_MS || 90000);
 const DATA_DIR = path.join(__dirname, "data");
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
@@ -249,6 +249,29 @@ const BIOMED_STOPWORDS = new Set([
   "user", "want", "wearable", "while", "with", "young", "adult", "adults"
 ]);
 
+const ENTITY_GENERIC_TOKENS = new Set([
+  ...BIOMED_STOPWORDS,
+  "condition", "conditions", "disease", "diseases", "disorder", "disorders", "following", "post", "pre",
+  "reconstruction", "syndrome", "type"
+]);
+
+function meaningfulEntityTokens(value) {
+  return normalizeDiseaseText(value)
+    .split(" ")
+    .filter((token) => token.length > 2 && !ENTITY_GENERIC_TOKENS.has(token));
+}
+
+function entityTokenOverlap(entityText, contextText) {
+  const context = normalizeDiseaseText(contextText);
+  return meaningfulEntityTokens(entityText).filter((token) => tokenAppears(context, token));
+}
+
+function entityFitsPromptContext(entityText, contextText) {
+  const tokens = meaningfulEntityTokens(entityText);
+  if (!tokens.length) return false;
+  return entityTokenOverlap(entityText, contextText).length > 0;
+}
+
 function phraseScore(phrase, sourceRank = 0) {
   const tokens = normalizeDiseaseText(phrase).split(" ").filter(Boolean);
   if (tokens.length === 0) return 0;
@@ -312,12 +335,17 @@ async function pubtatorDiseaseCandidates(input) {
 function diseaseResolverCandidates({ extractedDisease, canonicalDisease, pubtatorCandidates = [], prompt, symptomPhrase, deviceIntent }) {
   const candidates = [];
   const add = (name, reason, score = 0) => addUniqueCandidate(candidates, name, reason, score);
+  const contextText = [prompt, symptomPhrase, deviceIntent].filter(Boolean).join(" ");
 
   [extractedDisease, canonicalDisease].filter(Boolean).forEach((name, index) => {
-    add(name, index === 0 ? "extracted disease" : "PubTator canonical name", 100 - index * 5);
+    if (entityFitsPromptContext(name, contextText)) {
+      add(name, index === 0 ? "extracted disease" : "PubTator canonical name", 100 - index * 5);
+    }
   });
   for (const candidate of pubtatorCandidates) {
-    add(candidate.name, candidate.reason, candidate.score);
+    if (entityFitsPromptContext(candidate.name, contextText)) {
+      add(candidate.name, candidate.reason, candidate.score);
+    }
   }
   for (const query of genericConditionQueries({ extractedDisease, prompt, symptomPhrase, deviceIntent })) {
     add(query.text, "prompt phrase candidate", query.score);
@@ -344,6 +372,11 @@ function scoreDiseaseNode(node, candidate, contextText) {
   const contextTokens = new Set(context.split(" ").filter((token) => token.length > 3 && !BIOMED_STOPWORDS.has(token)));
   const contextOverlap = [...nodeTokens].filter((token) => contextTokens.has(token)).length;
   score += contextOverlap * 10;
+  const meaningfulCandidateTokens = meaningfulEntityTokens(candidateName);
+  const meaningfulNodeTokens = meaningfulEntityTokens(nodeName);
+  const meaningfulOverlap = meaningfulCandidateTokens.filter((token) => meaningfulNodeTokens.some((nodeToken) => tokenAppears(nodeToken, token) || tokenAppears(token, nodeToken))).length;
+  const meaningfulContextOverlap = meaningfulNodeTokens.filter((token) => tokenAppears(context, token)).length;
+  if (meaningfulOverlap === 0 && meaningfulContextOverlap === 0) return -Infinity;
   if (overlap === 0 && contextOverlap === 0) score -= 45;
 
   score -= Math.max(0, nodeName.length - candidateName.length) * 0.08;
@@ -352,7 +385,9 @@ function scoreDiseaseNode(node, candidate, contextText) {
 
 async function resolveDiseaseForPrimeKG({ extractedDisease, prompt, symptomPhrase, deviceIntent, warnings }) {
   let canonicalDisease = null;
-  if (extractedDisease) {
+  const baseContextText = [prompt, symptomPhrase, deviceIntent].filter(Boolean).join(" ");
+  const extractedDiseaseFitsContext = entityFitsPromptContext(extractedDisease, baseContextText);
+  if (extractedDisease && extractedDiseaseFitsContext) {
     try {
       canonicalDisease = await canonicalizeDiseaseName(extractedDisease);
     } catch {
@@ -360,10 +395,11 @@ async function resolveDiseaseForPrimeKG({ extractedDisease, prompt, symptomPhras
     }
   }
 
-  const contextText = [prompt, extractedDisease, canonicalDisease, symptomPhrase, deviceIntent].filter(Boolean).join(" ");
-  const pubtatorCandidates = await pubtatorDiseaseCandidates({ extractedDisease, prompt, symptomPhrase, deviceIntent });
-  const candidateQueries = diseaseResolverCandidates({ extractedDisease, canonicalDisease, pubtatorCandidates, prompt, symptomPhrase, deviceIntent });
+  const contextText = [prompt, extractedDiseaseFitsContext ? extractedDisease : null, canonicalDisease, symptomPhrase, deviceIntent].filter(Boolean).join(" ");
+  const pubtatorCandidates = await pubtatorDiseaseCandidates({ extractedDisease: extractedDiseaseFitsContext ? extractedDisease : null, prompt, symptomPhrase, deviceIntent });
+  const candidateQueries = diseaseResolverCandidates({ extractedDisease: extractedDiseaseFitsContext ? extractedDisease : null, canonicalDisease, pubtatorCandidates, prompt, symptomPhrase, deviceIntent });
   const scored = [];
+  const conditionTokens = extractedDiseaseFitsContext ? meaningfulEntityTokens(extractedDisease) : [];
 
   for (const candidate of candidateQueries) {
     const exact = primekg.findDiseaseNode(candidate.name);
@@ -374,7 +410,11 @@ async function resolveDiseaseForPrimeKG({ extractedDisease, prompt, symptomPhras
     }
   }
 
-  const deduped = [...scored.reduce((map, item) => {
+  const conditionAnchoredScored = conditionTokens.length
+    ? scored.filter((item) => conditionTokens.some((token) => tokenAppears(item.node.name, token)))
+    : scored;
+
+  const deduped = [...conditionAnchoredScored.reduce((map, item) => {
     const existing = map.get(item.node.index);
     if (!existing || item.score > existing.score) map.set(item.node.index, item);
     return map;
@@ -385,7 +425,7 @@ async function resolveDiseaseForPrimeKG({ extractedDisease, prompt, symptomPhras
     return {
       node: null,
       canonicalDisease,
-      queryName: canonicalDisease || extractedDisease,
+      queryName: canonicalDisease || (extractedDiseaseFitsContext ? extractedDisease : null),
       candidates: deduped.slice(0, 5).map((item) => ({ name: item.node.name, score: Math.round(item.score), reason: item.candidate.reason }))
     };
   }
@@ -412,13 +452,13 @@ function addUniqueQuery(queries, query) {
 function importantRetrievalTokens(text) {
   return [...new Set(normalizeDiseaseText(text)
     .split(" ")
-    .filter((token) => token.length > 3 && !BIOMED_STOPWORDS.has(token)))];
+    .filter((token) => token.length > 2 && !BIOMED_STOPWORDS.has(token)))];
 }
 
 const GENERIC_RETRIEVAL_TOKENS = new Set([
   "assistive", "biomedical", "caregiver", "clinical", "comfort", "comfortable", "connected", "continuous", "design",
   "digital", "enabled", "engineering", "feedback", "health", "medical", "monitor", "monitoring", "patient", "patients",
-  "portable", "prototype", "remote", "sensor", "sensors", "smart", "system", "systems", "track", "tracking", "user",
+  "portable", "prototype", "reconstruction", "remote", "sensor", "sensors", "smart", "system", "systems", "track", "tracking", "user",
   "users", "wear", "wearable", "wearables", "wireless"
 ]);
 
@@ -439,6 +479,9 @@ function tokenAppears(text, token) {
   const clean = normalizeDiseaseText(text);
   const normalizedToken = normalizeDiseaseText(token);
   if (!normalizedToken) return false;
+  if (normalizedToken.length <= 4) {
+    return clean.split(" ").includes(normalizedToken);
+  }
   if (clean.includes(normalizedToken)) return true;
   const stem = stemToken(normalizedToken);
   return stem.length >= 5 && clean.includes(stem);

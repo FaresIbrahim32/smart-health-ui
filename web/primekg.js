@@ -38,6 +38,47 @@ export function findDiseaseNode(name) {
   return rowToNode(candidates[0]);
 }
 
+export function searchDiseaseNodes(name, limit = 25) {
+  if (!db || !name) return [];
+  const nameLower = name.trim().toLowerCase();
+  if (!nameLower) return [];
+
+  const tokens = [...new Set(nameLower.split(/[^a-z0-9]+/).filter((token) => token.length > 2))];
+  const rowsByIndex = new Map();
+
+  const exact = db
+    .prepare("SELECT * FROM nodes WHERE node_type = 'disease' AND node_name_lower = ? LIMIT 1")
+    .get(nameLower);
+  if (exact) rowsByIndex.set(exact.node_index, { row: exact, score: 1000 });
+
+  const containsRows = db
+    .prepare("SELECT * FROM nodes WHERE node_type = 'disease' AND node_name_lower LIKE ? LIMIT ?")
+    .all(`%${nameLower}%`, Math.max(limit, 25));
+  for (const row of containsRows) {
+    const existing = rowsByIndex.get(row.node_index);
+    const score = 700 - Math.max(0, row.node_name_lower.length - nameLower.length);
+    if (!existing || score > existing.score) rowsByIndex.set(row.node_index, { row, score });
+  }
+
+  for (const token of tokens.slice(0, 6)) {
+    const tokenRows = db
+      .prepare("SELECT * FROM nodes WHERE node_type = 'disease' AND node_name_lower LIKE ? LIMIT ?")
+      .all(`%${token}%`, Math.max(limit, 25));
+    for (const row of tokenRows) {
+      const rowTokens = new Set(row.node_name_lower.split(/[^a-z0-9]+/).filter(Boolean));
+      const overlap = tokens.filter((candidateToken) => rowTokens.has(candidateToken)).length;
+      const score = overlap * 100 - Math.abs(row.node_name_lower.length - nameLower.length) * 0.1;
+      const existing = rowsByIndex.get(row.node_index);
+      if (!existing || score > existing.score) rowsByIndex.set(row.node_index, { row, score });
+    }
+  }
+
+  return [...rowsByIndex.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(1, Number(limit) || 25))
+    .map((item) => rowToNode(item.row));
+}
+
 // PrimeKG stores each undirected edge once, but not with a consistent
 // disease/phenotype/protein side — for a given relation, either endpoint can
 // land in x_index or y_index. Both directions must be checked or roughly

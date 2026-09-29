@@ -27,3 +27,29 @@ export async function canonicalizeDiseaseName(name) {
     clearTimeout(timeout);
   }
 }
+
+export async function suggestDiseaseNames(query, limit = 5) {
+  if (!query || !query.trim()) return [];
+
+  const url = new URL(AUTOCOMPLETE_URL);
+  url.searchParams.set("query", query.trim());
+  url.searchParams.set("concept", "disease");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) return [];
+    const results = await response.json();
+    if (!Array.isArray(results)) return [];
+    return results
+      .map((result) => result?.name)
+      .filter(Boolean)
+      .slice(0, Math.max(1, Number(limit) || 5));
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}

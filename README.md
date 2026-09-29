@@ -91,14 +91,14 @@ If you sign up, your account is saved locally on this machine for this project.
 Pull the Ollama models:
 
 ```bash
-ollama pull gemma4
+ollama pull gemma3:4b
 ollama pull nomic-embed-text
 ```
 
 The app reads `.env` from the repo root. Recommended `.env`:
 
 ```env
-OLLAMA_MODEL=gemma4:latest
+OLLAMA_MODEL=gemma3:4b
 OLLAMA_URL=http://127.0.0.1:11434
 OLLAMA_CHAT_TIMEOUT_MS=90000
 
