@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { Component, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -51,6 +51,7 @@ import {
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { buildAssembly, geom3ToBufferGeometry, exportStlBlob } from "./cadAssembly.js";
 import "./styles.css";
 
@@ -63,10 +64,12 @@ const pages = [
   { id: "results", label: "Architecture", icon: CheckCircle2 },
   { id: "evidence", label: "Evidence", icon: FileText },
   { id: "solutions", label: "Previous Solutions", icon: Search },
+  { id: "future", label: "Future Directions", icon: Sparkles },
   { id: "history", label: "History", icon: History },
   { id: "explore", label: "RAG Exploration", icon: Search },
   { id: "cad", label: "CAD Workspace", icon: Box }
 ];
+const profilePage = { id: "profile", label: "My Profile", icon: UserRound };
 
 const sourceTypes = [
   {
@@ -222,12 +225,21 @@ const workflowModes = [
 
 const AUTH_STORAGE_KEY = "smart-health-session";
 const THEME_STORAGE_KEY = "smart-health-theme";
+const DESIGN_WORKSPACE_STORAGE_KEY = "smart-health-design-workspace";
 const THEMES = ["navy", "dark", "light"];
 const THEME_LABEL = {
   navy: "Navy",
   dark: "Black",
   light: "Light"
 };
+
+function loadStoredDesignWorkspace() {
+  try {
+    return JSON.parse(localStorage.getItem(DESIGN_WORKSPACE_STORAGE_KEY)) || {};
+  } catch {
+    return {};
+  }
+}
 
 async function authRequest(path, body, token) {
   const response = await fetch(`http://127.0.0.1:3001${path}`, {
@@ -540,6 +552,7 @@ function Logo() {
 }
 
 function App() {
+  const storedWorkspace = useMemo(loadStoredDesignWorkspace, []);
   const [session, setSession] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)) || null;
@@ -548,19 +561,19 @@ function App() {
     }
   });
   const [authStatus, setAuthStatus] = useState(session?.token ? "checking" : "signed-out");
-  const [active, setActive] = useState("target");
+  const [active, setActive] = useState(storedWorkspace.active || "target");
   const [topPanel, setTopPanel] = useState(null);
-  const [ideationTarget, setIdeationTarget] = useState("cad");
-  const [workflowMode, setWorkflowMode] = useState("typical");
-  const [evidenceViewpoint, setEvidenceViewpoint] = useState("common");
-  const [designResult, setDesignResult] = useState(null);
-  const [designPrompt, setDesignPrompt] = useState("");
-  const [acceptedResult, setAcceptedResult] = useState(null);
-  const [acceptedPrompt, setAcceptedPrompt] = useState("");
-  const [designHistory, setDesignHistory] = useState([]);
-  const [currentVersionId, setCurrentVersionId] = useState(null);
-  const [acceptedVersionId, setAcceptedVersionId] = useState(null);
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [ideationTarget, setIdeationTarget] = useState(storedWorkspace.ideationTarget || "cad");
+  const [workflowMode, setWorkflowMode] = useState(storedWorkspace.workflowMode || "typical");
+  const [evidenceViewpoint, setEvidenceViewpoint] = useState(storedWorkspace.evidenceViewpoint || "common");
+  const [designResult, setDesignResult] = useState(storedWorkspace.designResult || null);
+  const [designPrompt, setDesignPrompt] = useState(storedWorkspace.designPrompt || "");
+  const [acceptedResult, setAcceptedResult] = useState(storedWorkspace.acceptedResult || null);
+  const [acceptedPrompt, setAcceptedPrompt] = useState(storedWorkspace.acceptedPrompt || "");
+  const [designHistory, setDesignHistory] = useState(storedWorkspace.designHistory || []);
+  const [currentVersionId, setCurrentVersionId] = useState(storedWorkspace.currentVersionId || null);
+  const [acceptedVersionId, setAcceptedVersionId] = useState(storedWorkspace.acceptedVersionId || null);
+  const [sidebarOpen, setSidebarOpen] = useState(storedWorkspace.sidebarOpen ?? true);
   const [theme, setTheme] = useState(() => {
     try {
       const saved = localStorage.getItem(THEME_STORAGE_KEY);
@@ -570,12 +583,12 @@ function App() {
     }
     return "navy";
   });
-  const ActiveIcon = pages.find((page) => page.id === active)?.icon || Activity;
+  const ActiveIcon = pages.find((page) => page.id === active)?.icon || (active === "profile" ? profilePage.icon : Activity);
   const isDesignComplete = hasIdeation(designResult);
   const isDesignAccepted = hasIdeation(acceptedResult) && Boolean(acceptedResult?.selectedConcept);
   const pageDisabled = (pageId) => (
     (pageId === "results" && !isDesignComplete)
-    || (["evidence", "solutions"].includes(pageId) && !isDesignComplete)
+    || (["evidence", "solutions", "future"].includes(pageId) && !isDesignComplete)
     || (["explore", "cad"].includes(pageId) && !isDesignAccepted)
   );
 
@@ -587,6 +600,28 @@ function App() {
       // Theme still works for the current session without storage.
     }
   }, [theme]);
+
+  useEffect(() => {
+    if (authStatus !== "signed-in") return;
+    try {
+      localStorage.setItem(DESIGN_WORKSPACE_STORAGE_KEY, JSON.stringify({
+        active,
+        ideationTarget,
+        workflowMode,
+        evidenceViewpoint,
+        designResult,
+        designPrompt,
+        acceptedResult,
+        acceptedPrompt,
+        designHistory,
+        currentVersionId,
+        acceptedVersionId,
+        sidebarOpen
+      }));
+    } catch {
+      // Large generated results may exceed browser storage; the app still works in memory.
+    }
+  }, [authStatus, active, ideationTarget, workflowMode, evidenceViewpoint, designResult, designPrompt, acceptedResult, acceptedPrompt, designHistory, currentVersionId, acceptedVersionId, sidebarOpen]);
 
   useEffect(() => {
     if (!session?.token) {
@@ -625,6 +660,7 @@ function App() {
     setSession(null);
     setAuthStatus("signed-out");
     localStorage.removeItem(AUTH_STORAGE_KEY);
+    localStorage.removeItem(DESIGN_WORKSPACE_STORAGE_KEY);
     if (token) {
       try {
         await authRequest("/api/auth/logout", {}, token);
@@ -641,6 +677,12 @@ function App() {
       return;
     }
     setTopPanel((current) => (current === item ? null : item));
+  }
+
+  function handleProfileSaved(user) {
+    const nextSession = { ...session, user };
+    setSession(nextSession);
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(nextSession));
   }
 
   function recordDesignVersion(prompt, result, kind) {
@@ -712,7 +754,7 @@ function App() {
           {theme === "light" ? <Sun size={17} /> : theme === "dark" ? <Moon size={17} /> : <Palette size={17} />}
           <span>{THEME_LABEL[theme]}</span>
         </button>
-        <button className="avatar" onClick={handleLogout}>{initials(session.user?.name)} <ChevronDown size={16} /></button>
+        <button className={active === "profile" ? "avatar active" : "avatar"} onClick={() => { setTopPanel(null); setActive("profile"); }} aria-label="Open my profile">{initials(session.user?.name)} <ChevronDown size={16} /></button>
         {topPanel && (
           <TopActionPanel
             panel={topPanel}
@@ -746,8 +788,17 @@ function App() {
         <section className="screen">
           <div className="screen-title">
             <ActiveIcon size={22} />
-            <span>{pages.find((page) => page.id === active)?.label}</span>
+            <span>{pages.find((page) => page.id === active)?.label || profilePage.label}</span>
           </div>
+          {!["pipeline", "knowledge", "history", "profile"].includes(active) && (
+            <WorkflowProgress
+              active={active}
+              workflowMode={workflowMode}
+              hasResult={isDesignComplete}
+              hasAccepted={isDesignAccepted}
+              onNavigate={setActive}
+            />
+          )}
           {active === "pipeline" && <PipelinePage />}
           {active === "knowledge" && <KnowledgePage />}
           {active === "target" && (
@@ -826,6 +877,7 @@ function App() {
           )}
           {active === "evidence" && <EvidencePage prompt={designPrompt} result={designResult} viewpoint={evidenceViewpoint} onViewpointChange={setEvidenceViewpoint} onBack={() => setActive("results")} />}
           {active === "solutions" && <PreviousSolutionsPage result={designResult} viewpoint={evidenceViewpoint} onViewpointChange={setEvidenceViewpoint} onBack={() => setActive("results")} />}
+          {active === "future" && <FutureDirectionsPage result={designResult} onBack={() => setActive("results")} />}
           {active === "history" && (
             <HistoryPage
               history={designHistory}
@@ -841,9 +893,156 @@ function App() {
             setAcceptedResult(nextResult);
             setDesignResult(nextResult);
           }} />}
+          {active === "profile" && <ProfilePage user={session.user} onSaved={handleProfileSaved} onLogout={handleLogout} />}
         </section>
       </div>
     </main>
+  );
+}
+
+function ProfilePage({ user, onSaved, onLogout }) {
+  const [form, setForm] = useState({
+    affiliation: user?.affiliation || "",
+    occupation: user?.occupation || "",
+    bio: user?.bio || "",
+    googleScholarUrl: user?.googleScholarUrl || "",
+    githubUrl: user?.githubUrl || "",
+    websiteUrl: user?.websiteUrl || "",
+    linkedinUrl: user?.linkedinUrl || ""
+  });
+  const [status, setStatus] = useState("idle");
+  const [error, setError] = useState("");
+
+  function update(field, value) {
+    setForm((current) => ({ ...current, [field]: value }));
+  }
+
+  async function save(event) {
+    event.preventDefault();
+    setStatus("saving");
+    setError("");
+    try {
+      const storedSession = JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY) || "{}");
+      const response = await fetch("http://127.0.0.1:3001/api/auth/profile", {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer " + (storedSession.token || "")
+        },
+        body: JSON.stringify(form)
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Could not save profile");
+      onSaved(data.user);
+      setStatus("saved");
+    } catch (err) {
+      setStatus("error");
+      setError(err instanceof Error ? err.message : "Could not save profile");
+    }
+  }
+
+  return (
+    <div className="profile-page">
+      <section className="profile-hero">
+        <div className="profile-avatar-large">{initials(user?.name)}</div>
+        <div>
+          <span className="eyebrow">Account profile</span>
+          <h1>{user?.name || "Your profile"}</h1>
+          <p>{user?.email}</p>
+        </div>
+      </section>
+      <form className="profile-form" onSubmit={save}>
+        <section className="panel profile-section">
+          <h2>Professional information</h2>
+          <div className="profile-field-grid">
+            <label><span>Affiliation</span><input value={form.affiliation} onChange={(event) => update("affiliation", event.target.value)} placeholder="USF Shield Lab" /></label>
+            <label><span>Occupation</span><input value={form.occupation} onChange={(event) => update("occupation", event.target.value)} placeholder="Biomedical engineer, physician, researcher..." /></label>
+          </div>
+          <label><span>About you</span><textarea rows={4} value={form.bio} onChange={(event) => update("bio", event.target.value)} placeholder="Add a short professional description." /></label>
+        </section>
+        <section className="panel profile-section">
+          <h2>Professional links</h2>
+          <p className="profile-help">Optional links that can help collaborators understand your work.</p>
+          <div className="profile-field-grid">
+            <label><span>Google Scholar</span><input type="url" value={form.googleScholarUrl} onChange={(event) => update("googleScholarUrl", event.target.value)} placeholder="https://scholar.google.com/..." /></label>
+            <label><span>GitHub</span><input type="url" value={form.githubUrl} onChange={(event) => update("githubUrl", event.target.value)} placeholder="https://github.com/..." /></label>
+            <label><span>Website</span><input type="url" value={form.websiteUrl} onChange={(event) => update("websiteUrl", event.target.value)} placeholder="https://your-site.com" /></label>
+            <label><span>LinkedIn</span><input type="url" value={form.linkedinUrl} onChange={(event) => update("linkedinUrl", event.target.value)} placeholder="https://linkedin.com/in/..." /></label>
+          </div>
+        </section>
+        <div className="profile-actions">
+          <button className="primary" type="submit" disabled={status === "saving"}>{status === "saving" ? "Saving..." : "Save profile"}</button>
+          <button className="ghost profile-logout" type="button" onClick={onLogout}>Log out</button>
+          {status === "saved" && <span className="profile-saved">Profile saved</span>}
+          {error && <span className="profile-error">{error}</span>}
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function WorkflowProgress({ active, workflowMode, hasResult, hasAccepted, onNavigate }) {
+  const isPhase2Only = workflowMode === "phase2";
+  const baseSteps = [
+    { id: "target", label: "Target", caption: "What are you designing?", ready: true },
+    { id: "workflow", label: "Mode", caption: "Choose the depth", ready: true },
+    { id: "new", label: "Prompt", caption: "Describe the goal", ready: true }
+  ];
+  const steps = isPhase2Only
+    ? [...baseSteps, { id: "cad", label: "CAD Workspace", caption: "Specs and preview", ready: hasResult }]
+    : [...baseSteps,
+        { id: "results", label: "Architecture", caption: "Compare concepts", ready: hasResult },
+        { id: "explore", label: "Workspace", caption: "Evidence and CAD", ready: hasAccepted }];
+  const activeIndex = ["evidence", "solutions", "future"].includes(active)
+    ? 3
+    : Math.max(0, steps.findIndex((step) => step.id === active));
+  const reviewLinks = !isPhase2Only && hasResult
+    ? [
+        { id: "evidence", label: "Evidence", icon: FileText },
+        { id: "solutions", label: "Previous Solutions", icon: Search },
+        { id: "future", label: "Future Directions", icon: Sparkles }
+      ]
+    : [];
+
+  return (
+    <nav className="workflow-progress" aria-label="Design workflow">
+      <div className="workflow-progress-copy">
+        <span className="eyebrow">Design flow</span>
+        <strong>{steps[activeIndex]?.label || "Workspace"}</strong>
+        <small>{steps[activeIndex]?.caption}</small>
+      </div>
+      <div className="workflow-progress-steps">
+        {steps.map((step, index) => {
+          const isActive = index === activeIndex;
+          const isComplete = index < activeIndex || (index === 3 && hasResult && !isPhase2Only && active === "results");
+          const isDisabled = index > activeIndex && !step.ready;
+          return (
+            <React.Fragment key={`${step.label}-${index}`}>
+              {index > 0 && <span className={index <= activeIndex ? "workflow-connector complete" : "workflow-connector"} aria-hidden="true" />}
+              <button
+                type="button"
+                className={`workflow-step-button${isActive ? " active" : ""}${isComplete ? " complete" : ""}`}
+                disabled={isDisabled}
+                onClick={() => onNavigate(step.id)}
+                title={isDisabled ? "Complete the previous step first" : step.caption}
+              >
+                <span className="workflow-step-number">{isComplete ? <Check size={14} /> : index + 1}</span>
+                <span className="workflow-step-label">{step.label}</span>
+              </button>
+            </React.Fragment>
+          );
+        })}
+      </div>
+      {reviewLinks.length > 0 && (
+        <div className="workflow-progress-links" aria-label="Architecture review pages">
+          {reviewLinks.map(({ id, label, icon: Icon }) => (
+            <button type="button" className={active === id ? "active" : ""} key={id} onClick={() => onNavigate(id)}>
+              <Icon size={13} />{label}
+            </button>
+          ))}
+        </div>
+      )}
+    </nav>
   );
 }
 
@@ -1644,6 +1843,97 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
   );
 }
 
+function FutureDirectionsPage({ result, onBack }) {
+  const directions = result?.ideation?.futureDirections || [];
+  if (!result || !directions.length) {
+    return (
+      <div className="empty-results">
+        <Sparkles size={42} />
+        <h1>No future directions yet</h1>
+        <p>Run Phase 1 ideation first. Future directions are reasoned from the extracted health context, retrieved evidence, and prior-solution graph.</p>
+        <button className="primary gate-button" onClick={onBack}>Back to Architecture</button>
+      </div>
+    );
+  }
+
+  const disease = result.subgraph?.disease?.name || result.extraction?.disease || "Prompt health context";
+  const solutionFamilies = result.solutionGraph?.previousSolutions || [];
+  const sourceCount = (result.literature?.length || 0) + (result.guidelines?.length || 0) + (result.solutionGraph?.nodes?.filter((node) => node.type === "source").length || 0);
+
+  return (
+    <div className="review-page future-page">
+      <section className="generated-hero review-hero">
+        <div>
+          <span className="eyebrow">Separate reasoning review</span>
+          <h1>Future solution directions</h1>
+          <p>These are forward-looking concepts generated from the same health context and evidence pipeline, but they are allowed to move beyond the form factors found in previous solutions.</p>
+        </div>
+        <article className="panel review-control-card future-basis-card">
+          <Sparkles size={22} />
+          <strong>{directions.length} future direction{directions.length === 1 ? "" : "s"}</strong>
+          <span>Speculative design reasoning · human review required</span>
+          <button className="ghost evidence-only-button" onClick={onBack}>Back to Architecture</button>
+        </article>
+      </section>
+
+      <section className="future-basis-grid">
+        <article className="panel future-basis-card">
+          <h3><Database size={18} />Reasoning inputs</h3>
+          <div className="future-basis-row"><strong>Health context</strong><span>{disease}</span></div>
+          <div className="future-basis-row"><strong>Extracted goal</strong><span>{result.extraction?.deviceIntent || result.promptProfile?.engineeringPrompt || "Design goal from prompt"}</span></div>
+          <div className="future-basis-row"><strong>Retrieved sources</strong><span>{sourceCount} source record{sourceCount === 1 ? "" : "s"} used in the reasoning context</span></div>
+        </article>
+        <article className="panel future-basis-card">
+          <h3><Search size={18} />Previous-solution graph</h3>
+          <p>{result.solutionGraph?.summary || "No prior-solution families were extracted."}</p>
+          <div className="chip-row">
+            {solutionFamilies.slice(0, 6).map((solution) => <span className="chip" key={`${solution.title}-${solution.formFactor}`}>{solution.formFactor || solution.title}</span>)}
+          </div>
+        </article>
+      </section>
+
+      <FutureDirectionsPanel directions={directions} />
+    </div>
+  );
+}
+
+function FutureDirectionsPanel({ directions = [] }) {
+  if (!directions.length) return null;
+  return (
+    <section className="future-directions-panel" aria-labelledby="future-directions-title">
+      <div className="future-directions-header">
+        <div>
+          <span className="eyebrow">Open-ended reasoning</span>
+          <h2 id="future-directions-title">Future solution directions</h2>
+          <p>These ideas are not limited to the device families found in previous solutions. They are speculative paths that still need evidence, feasibility testing, and human approval.</p>
+        </div>
+        <Sparkles size={24} aria-hidden="true" />
+      </div>
+      <div className="future-direction-grid">
+        {directions.map((direction) => (
+          <details className="future-direction" key={direction.id}>
+            <summary>
+              <span>
+                <strong>{direction.title}</strong>
+                <small>{direction.formFactor}</small>
+              </span>
+              <span className="future-direction-toggle">View reasoning</span>
+            </summary>
+            <p>{direction.description}</p>
+            <div className="future-direction-facts">
+              <div><b>Why it fits</b><span>{direction.problemFit}</span></div>
+              <div><b>What is new</b><span>{direction.novelty}</span></div>
+              <div><b>Feasibility</b><span>{direction.feasibility}</span></div>
+              <div><b>Risks to review</b><span>{direction.risks}</span></div>
+              <div><b>Next validation</b><span>{direction.nextValidation}</span></div>
+            </div>
+          </details>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ConceptIdeationCard({ option, recommended, selected, onSelect }) {
   const score = option.evidenceStrength?.overall ?? 0;
   return (
@@ -2022,9 +2312,11 @@ function CommonResults({ prompt, result }) {
 
 function SimilarSolutionsPanel({ result }) {
   const { solutions } = commonUserInfo(result);
+  const graph = result.solutionGraph;
   return (
     <article className="panel common-info-panel">
       <h3><Search size={20} />Similar Or Previous Solutions</h3>
+      {graph?.summary && <p>{graph.summary}</p>}
       <div className="solution-list">
         {solutions.map((item) => (
           <details className="solution-row" key={`${item.source}-${item.title}`}>
@@ -2050,6 +2342,7 @@ function commonUserInfo(result) {
   const topAnatomy = result.subgraph?.anatomy?.slice(0, 2).map((node) => node.name) || [];
   const guideline = result.guidelines?.[0];
   const papers = result.literature?.slice(0, 4) || [];
+  const graphSolutions = result.solutionGraph?.previousSolutions || [];
 
   const terminology = [
     {
@@ -2086,7 +2379,18 @@ function commonUserInfo(result) {
     }
   ];
 
-  const solutions = papers.length
+  const solutions = graphSolutions.length
+    ? graphSolutions.map((solution) => ({
+        title: solution.title,
+        source: [solution.source, solution.formFactor].filter(Boolean).join(" | ") || "Solution knowledge graph",
+        detail: `${solution.detail} Evidence signals: ${solution.evidenceCount || 0}.`,
+        fullDetail: [
+          solution.detail,
+          ...(solution.examples || []).map((example) => `${example.title}${example.source ? ` (${example.source})` : ""}`)
+        ].filter(Boolean).join("\n"),
+        url: solution.examples?.find((example) => example.url)?.url
+      }))
+    : papers.length
     ? papers.map((paper) => ({
         title: paper.title,
         source: [paper.source, paper.venue, paper.year].filter(Boolean).join(" | ") || "Literature source",
@@ -2302,17 +2606,25 @@ function ArchitectureCadPanel({ layout }) {
         </div>
       </div>
       <div className="architecture-cad-evidence">
-        <h4>Generated layers and evidence</h4>
-        {evidenceParts.map((part) => (
-          <div className="architecture-layer-row" key={part.id}>
-            <Check size={16} />
-            <span>
-              <strong>{part.type}</strong>
-              <small>{[part.material, part.placement].filter(Boolean).join(" - ") || "Generated CAD layer"}</small>
-              <small>{part.groundedIn}</small>
-            </span>
+        <div className="architecture-cad-evidence-header">
+          <div>
+            <span className="eyebrow">Component evidence</span>
+            <h4>Generated layers and evidence</h4>
           </div>
-        ))}
+          <span className="chip">{evidenceParts.length} layers</span>
+        </div>
+        <div className="architecture-layer-grid">
+          {evidenceParts.map((part) => (
+            <div className="architecture-layer-row" key={part.id}>
+              <Check size={16} />
+              <span>
+                <strong>{part.type}</strong>
+                <small>{[part.material, part.placement].filter(Boolean).join(" - ") || "Generated CAD layer"}</small>
+                <small>{part.groundedIn}</small>
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
     </article>
   );
@@ -2577,12 +2889,6 @@ function CadPage({ prompt, result, onResultUpdate }) {
           </div>
           <p>{cadMode === "generated" ? "Use the accepted concept to create engineering specs and an enhanced 3D concept preview." : "Upload an STL file, then drag to rotate and scroll to zoom."}</p>
         </article>
-        {showGeneratedDetails && (
-          <>
-            <Panel title="Generated Model Layers" icon={Layers} items={cadLayerItems({ ...result, cadLayout: specLayout })} />
-            <Panel title="Component Evidence" icon={Gauge} items={cadEvidenceItems({ ...result, cadLayout: specLayout })} />
-          </>
-        )}
       </aside>
       <section className="cad-stage">
         {cadMode === "generated" && specLayout && !showPreview && (
@@ -2646,6 +2952,12 @@ function CadPage({ prompt, result, onResultUpdate }) {
           </div>
         )}
       </aside>
+      {showGeneratedDetails && (
+        <section className="cad-support-panels" aria-label="Generated CAD evidence">
+          <Panel title="Generated Model Layers" icon={Layers} items={cadLayerItems({ ...result, cadLayout: specLayout })} />
+          <Panel title="Component Evidence" icon={Gauge} items={cadEvidenceItems({ ...result, cadLayout: specLayout })} />
+        </section>
+      )}
     </div>
   );
 }
@@ -2715,35 +3027,151 @@ function SpecFirstStage({ layout, concept, specsAccepted, onAcceptSpecs, onGener
 }
 
 function GeneratedCadViewer({ layout, prompt }) {
-  const assembly = useMemo(() => buildAssembly(layout), [layout]);
-  const dimensionText = formatDimensions(layout.dimensions);
+  const assembly = useMemo(() => {
+    try {
+      return buildAssembly(layout);
+    } catch (error) {
+      console.error("CAD assembly could not be built", error);
+      return { parts: [] };
+    }
+  }, [layout]);
+  const dimensionText = formatDimensions(layout?.dimensions);
+  const [blenderPreviewUrl, setBlenderPreviewUrl] = useState(null);
+  const [blenderStatus, setBlenderStatus] = useState("loading");
+
+  useEffect(() => {
+    let cancelled = false;
+    let nextUrl = null;
+    setBlenderStatus("loading");
+    fetch("http://127.0.0.1:3001/api/blender-preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layout })
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error((await response.json()).detail || "Blender preview failed");
+        return response.blob();
+      })
+      .then((blob) => {
+        if (cancelled) return;
+        nextUrl = URL.createObjectURL(blob);
+        setBlenderPreviewUrl(nextUrl);
+        setBlenderStatus("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setBlenderStatus("fallback");
+      });
+    return () => {
+      cancelled = true;
+      if (nextUrl) URL.revokeObjectURL(nextUrl);
+    };
+  }, [layout]);
 
   function downloadStl() {
     downloadCadStl(layout);
+  }
+
+  async function downloadBlenderGlb() {
+    if (!layout) return;
+    const fileBase = safeFileBase(layout?.device || "smart-health-generated-design");
+    const response = await fetch("http://127.0.0.1:3001/api/blender-glb", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layout })
+    });
+    if (!response.ok) throw new Error("Blender GLB download failed");
+    downloadBlob(await response.blob(), `${fileBase}-blender.glb`);
   }
 
   return (
     <div className="generated-cad-stage">
       <div className="stl-toolbar">
         <div>
-          <strong>{layout.device}</strong>
-          <span className="chip">{layout.formFactor || "auto-selected form factor"}</span>
+          <strong>{layout?.device || "Generated CAD concept"}</strong>
+          <span className="chip">{layout?.formFactor || "auto-selected form factor"}</span>
           {dimensionText && <span className="chip">{dimensionText}</span>}
           {prompt && <span className="stl-file-meta">{prompt}</span>}
         </div>
-        <button className="primary download-inline" onClick={downloadStl}>Download STL</button>
+        <div className="stl-toolbar-actions">
+          {blenderPreviewUrl && <button className="primary download-inline" onClick={downloadBlenderGlb}>Download GLB</button>}
+          <button className="primary download-inline" onClick={downloadStl}>Download STL</button>
+        </div>
       </div>
       <div className="stl-canvas">
-        <Canvas camera={{ position: [3.5, 2.5, 3.5], fov: 45 }}>
-          <ambientLight intensity={0.6} />
-          <directionalLight position={[4, 5, 4]} intensity={1} />
-          <gridHelper args={[6, 12, "#1463ff", "#0a1f30"]} />
-          {assembly.parts.map((part) => <CadPartMesh key={part.id} part={part} />)}
-          <OrbitControls />
-        </Canvas>
+        {blenderStatus === "loading" && <div className="cad-pending"><RefreshCw className="spin-icon" size={34} /><h2>Building Blender preview</h2><p>Creating a more polished visual model from the accepted concept and component layers.</p></div>}
+        {blenderStatus !== "loading" && (
+          blenderPreviewUrl ? (
+            <img className="blender-preview-image" src={blenderPreviewUrl} alt="Blender-rendered CAD concept preview" />
+          ) : (
+            <CadCanvasBoundary fallback={<CadPreviewUnavailable layout={layout} />}>
+              <Canvas camera={{ position: [3.5, 2.5, 3.5], fov: 45 }}>
+                <ambientLight intensity={0.6} />
+                <directionalLight position={[4, 5, 4]} intensity={1} />
+                <gridHelper args={[6, 12, "#1463ff", "#0a1f30"]} />
+                {assembly.parts.map((part) => <CadPartMesh key={part.id} part={part} />)}
+                <OrbitControls />
+              </Canvas>
+            </CadCanvasBoundary>
+          )
+        )}
       </div>
     </div>
   );
+}
+
+class CadCanvasBoundary extends Component {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error) {
+    console.error("CAD preview could not be rendered", error);
+  }
+
+  render() {
+    return this.state.hasError ? this.props.fallback : this.props.children;
+  }
+}
+
+function CadPreviewUnavailable({ layout }) {
+  return (
+    <div className="cad-preview-unavailable">
+      <Box size={30} />
+      <strong>3D preview unavailable in this browser</strong>
+      <span>The generated CAD files are still ready to download. Try another browser or use the GLB/STL downloads.</span>
+      <small>{layout?.device || "Generated CAD concept"} · {layout?.formFactor || "generated CAD concept"}</small>
+    </div>
+  );
+}
+
+function BlenderScene({ url, onError }) {
+  const [scene, setScene] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setScene(null);
+    const loader = new GLTFLoader();
+    loader.load(
+      url,
+      (gltf) => {
+        if (!cancelled) setScene(gltf.scene);
+      },
+      undefined,
+      () => {
+        if (!cancelled) {
+          setScene(null);
+          onError?.();
+        }
+      }
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  return scene ? <primitive object={scene} /> : null;
 }
 
 function StlUploadViewer() {
@@ -2960,4 +3388,30 @@ function Chat({ compact }) {
   );
 }
 
-createRoot(document.getElementById("root")).render(<App />);
+class AppErrorBoundary extends Component {
+  state = { hasError: false, error: null };
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error) {
+    console.error("Application render error", error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <main className="app-error-state">
+          <h1>Workspace could not render</h1>
+          <p>The preview encountered a browser rendering error. Reload the page to return to the workspace.</p>
+          {this.state.error?.message && <details><summary>Technical detail</summary><code>{this.state.error.message}</code></details>}
+          <button className="primary" onClick={() => window.location.reload()}>Reload workspace</button>
+        </main>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+createRoot(document.getElementById("root")).render(<AppErrorBoundary><App /></AppErrorBoundary>);

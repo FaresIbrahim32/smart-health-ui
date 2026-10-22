@@ -13,6 +13,7 @@ import { searchEuropePmc } from "./europePmc.js";
 import { canonicalizeDiseaseName, suggestDiseaseNames } from "./pubtator.js";
 import * as guidelines from "./guidelines.js";
 import { getRelevantStandards } from "./standards.js";
+import { buildSolutionGraph, summarizeSolutionGraphForPrompt } from "./solutionGraph.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 try {
@@ -25,6 +26,7 @@ const PORT = Number(process.env.SMART_HEALTH_API_PORT || 3001);
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://127.0.0.1:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma3:4b";
 const OLLAMA_CHAT_TIMEOUT_MS = Number(process.env.OLLAMA_CHAT_TIMEOUT_MS || 90000);
+const BLENDER_BIN = process.env.BLENDER_BIN || "/Applications/Blender.app/Contents/MacOS/Blender";
 const DATA_DIR = path.join(__dirname, "data");
 if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
@@ -47,6 +49,22 @@ authDb.exec(`
   );
 `);
 
+for (const [column, type] of [
+  ["affiliation", "TEXT"],
+  ["occupation", "TEXT"],
+  ["bio", "TEXT"],
+  ["google_scholar_url", "TEXT"],
+  ["github_url", "TEXT"],
+  ["website_url", "TEXT"],
+  ["linkedin_url", "TEXT"]
+]) {
+  try {
+    authDb.exec(`ALTER TABLE users ADD COLUMN ${column} ${type}`);
+  } catch {
+    // Existing databases already have this profile field.
+  }
+}
+
 const SYSTEM_PROMPT = `You are Smart Health by Design, an AI design co-pilot for biomedical technology innovation.
 
 Your role:
@@ -63,7 +81,7 @@ function sendJson(res, status, body) {
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS, GET",
+    "Access-Control-Allow-Methods": "POST, PUT, OPTIONS, GET",
     "Access-Control-Allow-Headers": "Content-Type, Authorization"
   });
   res.end(JSON.stringify(body));
@@ -91,7 +109,18 @@ function normalizeEmail(email) {
 }
 
 function publicUser(row) {
-  return { id: row.id, name: row.name, email: row.email };
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    affiliation: row.affiliation || "",
+    occupation: row.occupation || "",
+    bio: row.bio || "",
+    googleScholarUrl: row.google_scholar_url || "",
+    githubUrl: row.github_url || "",
+    websiteUrl: row.website_url || "",
+    linkedinUrl: row.linkedin_url || ""
+  };
 }
 
 function hashPassword(password, salt = randomBytes(16).toString("hex")) {
@@ -123,7 +152,7 @@ function userFromToken(token) {
   if (!token) return null;
   const row = authDb
     .prepare(
-      `SELECT users.id, users.name, users.email
+      `SELECT users.*
        FROM sessions
        JOIN users ON users.id = sessions.user_id
        WHERE sessions.token = ? AND sessions.expires_at > ?`
@@ -252,7 +281,7 @@ const BIOMED_STOPWORDS = new Set([
 const ENTITY_GENERIC_TOKENS = new Set([
   ...BIOMED_STOPWORDS,
   "condition", "conditions", "disease", "diseases", "disorder", "disorders", "following", "post", "pre",
-  "reconstruction", "syndrome", "type"
+  "reconstruction", "syndrome", "type", "blunt", "force", "potential"
 ]);
 
 function meaningfulEntityTokens(value) {
@@ -277,8 +306,28 @@ function phraseScore(phrase, sourceRank = 0) {
   if (tokens.length === 0) return 0;
   const lengthScore = Math.min(36, tokens.length * 9);
   const specificity = tokens.filter((token) => token.length > 5 && !BIOMED_STOPWORDS.has(token)).length * 5;
-  const medicalCue = tokens.some((token) => /itis$|osis$|emia$|pathy$|algia$|injury|trauma|syndrome|disease|disorder|defect|failure|pain|tear|rupture|infection|cancer|tumor|rehab|surgery|reconstruction/.test(token)) ? 18 : 0;
+  const medicalCue = tokens.some((token) => /itis$|osis$|emia$|pathy$|algia$|injury|trauma|concussion|syndrome|disease|disorder|defect|failure|pain|tear|rupture|infection|cancer|tumor|rehab|surgery|reconstruction/.test(token)) ? 18 : 0;
   return 42 + lengthScore + specificity + medicalCue - sourceRank;
+}
+
+function inferredConditionCandidatesFromContext({ prompt, symptomPhrase, deviceIntent }) {
+  const context = normalizeDiseaseText([prompt, symptomPhrase, deviceIntent].filter(Boolean).join(" "));
+  const candidates = [];
+  const add = (name, reason, score) => candidates.push({ name, normalized: normalizeDiseaseText(name), reason, score });
+
+  const hasInjuryCue = /\b(injury|injuries|trauma|traumatic|concussion|concussive|impact|collision|blow|hit)\b/.test(context);
+  if (hasInjuryCue && /\b(head|brain|cranial|skull|helmet)\b/.test(context)) {
+    add("brain injury", "anatomy + injury cue inferred from prompt context", 118);
+  }
+  if (hasInjuryCue && /\b(knee|acl|ligament|patella|meniscus)\b/.test(context)) {
+    add("knee injury", "anatomy + injury cue inferred from prompt context", 112);
+  }
+  if (hasInjuryCue && /\b(ankle|foot|shoulder|elbow|wrist|hip|spine|spinal)\b/.test(context)) {
+    const anatomy = context.match(/\b(ankle|foot|shoulder|elbow|wrist|hip|spine|spinal)\b/)?.[1];
+    if (anatomy) add(`${anatomy === "spinal" ? "spinal" : anatomy} injury`, "anatomy + injury cue inferred from prompt context", 104);
+  }
+
+  return candidates;
 }
 
 function genericConditionQueries({ extractedDisease, prompt, symptomPhrase, deviceIntent }) {
@@ -347,6 +396,9 @@ function diseaseResolverCandidates({ extractedDisease, canonicalDisease, pubtato
       add(candidate.name, candidate.reason, candidate.score);
     }
   }
+  for (const candidate of inferredConditionCandidatesFromContext({ prompt, symptomPhrase, deviceIntent })) {
+    add(candidate.name, candidate.reason, candidate.score);
+  }
   for (const query of genericConditionQueries({ extractedDisease, prompt, symptomPhrase, deviceIntent })) {
     add(query.text, "prompt phrase candidate", query.score);
   }
@@ -377,6 +429,11 @@ function scoreDiseaseNode(node, candidate, contextText) {
   const meaningfulOverlap = meaningfulCandidateTokens.filter((token) => meaningfulNodeTokens.some((nodeToken) => tokenAppears(nodeToken, token) || tokenAppears(token, nodeToken))).length;
   const meaningfulContextOverlap = meaningfulNodeTokens.filter((token) => tokenAppears(context, token)).length;
   if (meaningfulOverlap === 0 && meaningfulContextOverlap === 0) return -Infinity;
+  const overlapRatio = meaningfulCandidateTokens.length ? meaningfulOverlap / meaningfulCandidateTokens.length : 0;
+  if (meaningfulCandidateTokens.length === 1 && nodeName !== candidateName && !candidateName.includes(nodeName)) return -Infinity;
+  if (meaningfulCandidateTokens.length >= 2 && overlapRatio < 0.5 && nodeName !== candidateName) return -Infinity;
+  const extraNodeTokens = meaningfulNodeTokens.filter((token) => !meaningfulCandidateTokens.some((candidateToken) => tokenAppears(candidateToken, token) || tokenAppears(token, candidateToken)));
+  if (meaningfulOverlap <= 1 && extraNodeTokens.length >= 2 && meaningfulContextOverlap <= 1) return -Infinity;
   if (overlap === 0 && contextOverlap === 0) score -= 45;
 
   score -= Math.max(0, nodeName.length - candidateName.length) * 0.08;
@@ -430,8 +487,12 @@ async function resolveDiseaseForPrimeKG({ extractedDisease, prompt, symptomPhras
     };
   }
 
-  if (best.node.name.toLowerCase() !== String(extractedDisease).toLowerCase()) {
-    warnings.push(`Using PrimeKG disease node "${best.node.name}" for extracted disease "${extractedDisease}".`);
+  if (best.node.name.toLowerCase() !== String(extractedDisease || "").toLowerCase()) {
+    warnings.push(
+      extractedDisease
+        ? `Using PrimeKG disease node "${best.node.name}" for extracted disease "${extractedDisease}".`
+        : `Using PrimeKG disease node "${best.node.name}" inferred from prompt context.`
+    );
   }
 
   return {
@@ -836,13 +897,15 @@ const IDEATION_SYSTEM_PROMPT = `${SYSTEM_PROMPT}
 Generate multiple early-stage product concept options for a human-in-the-loop biomedical design workflow. These are conceptual imagination cards only, not CAD models and not manufacturing specs.
 
 Respond with ONLY a JSON object, no prose, no markdown fences, matching exactly:
-{"summary": string, "recommendedOptionId": string, "options": [{"id": string, "title": string, "formFactor": string, "conceptImagePrompt": string, "plainDescription": string, "professionalDescription": string, "evidenceStrength": {"clinical": number, "literature": number, "engineering": number, "humanFactors": number, "overall": number}, "tradeoffs": [{"label": string, "rating": "low" | "medium" | "high", "detail": string}], "bestFor": string, "watchOut": string, "rationale": string}]}
+{"summary": string, "recommendedOptionId": string, "options": [{"id": string, "title": string, "formFactor": string, "conceptImagePrompt": string, "plainDescription": string, "professionalDescription": string, "evidenceStrength": {"clinical": number, "literature": number, "engineering": number, "humanFactors": number, "overall": number}, "tradeoffs": [{"label": string, "rating": "low" | "medium" | "high", "detail": string}], "bestFor": string, "watchOut": string, "rationale": string}], "futureDirections": [{"id": string, "title": string, "formFactor": string, "description": string, "problemFit": string, "novelty": string, "feasibility": string, "risks": string, "nextValidation": string}]}
 
 Rules:
 - Return EXACTLY the requested number of options, between 1 and 5.
 - Include varied biomedical device forms when appropriate, such as a bottle, glove, cup holder, sword, patch, clip-on, handheld device, textile, wristband, mobile app, or hybrid system.
 - If the user explicitly asks for a physical shape or product family such as sword, glove, cup holder, sleeve, shoe, insole, helmet, cup, bottle, ring, belt, or strap, preserve that as the formFactor unless it is unsafe or contradicted by the request.
 - If the user asks generically for a "device", "system", "wearable", "tool", or "solution", choose concepts from prior similar device/form-factor signals found in the retrieved papers and evidence notes. Only improvise a new generic form such as clip-on, patch, or handheld when the evidence notes say there are few or no prior device-form signals.
+- After the evidence-led options, also generate 2 futureDirections. These are intentionally open-ended research directions, not claims that a validated product exists. They may use a new form factor or sensing strategy instead of copying prior solutions, but must still address the same health concern, user, body context, goals, and safety constraints.
+- Future directions must explain why the idea could help, what makes it novel, what could make it difficult, the main safety/clinical unknowns, and the next human-reviewed validation step. Do not let novelty override the retrieved evidence or present speculation as medical advice.
 - If the user explicitly asks for an unusual or new form factor, keep that desired form in at least one option and use the same disease, literature, guideline, and knowledge-graph evidence flow to discuss fit, risks, and trade-offs.
 - For hydration, sweat, sports, pediatric athlete, drink, water, or bottle prompts, use bottle/container/hydration form factors. Do not use retainer or mouthguard for these prompts.
 - Use retainer or mouthguard only when the prompt explicitly mentions oral/dental/saliva/teeth/mouth placement.
@@ -1241,6 +1304,48 @@ function repairIdeationForContext(ideation, prompt, numOptions, priorDeviceSigna
   return ideation;
 }
 
+function normalizeFutureDirections(directions, prompt) {
+  if (!Array.isArray(directions)) return [];
+  return directions.slice(0, 3).map((direction, index) => ({
+    id: String(direction.id || `future-${index + 1}`),
+    title: String(direction.title || `Future direction ${index + 1}`),
+    formFactor: String(direction.formFactor || "open form factor"),
+    description: String(direction.description || direction.problemFit || `A future concept direction for ${prompt}.`),
+    problemFit: String(direction.problemFit || "Needs to preserve the user goal and target context."),
+    novelty: String(direction.novelty || "Introduces a new design direction rather than copying a retrieved device family."),
+    feasibility: String(direction.feasibility || "Requires feasibility work before it can be treated as a realistic product direction."),
+    risks: String(direction.risks || "Safety, usability, clinical meaning, and false-alert risks require human review."),
+    nextValidation: String(direction.nextValidation || "Define a small human-reviewed feasibility test with representative users and domain experts.")
+  }));
+}
+
+function fallbackFutureDirections(prompt) {
+  return [
+    {
+      id: "future-1",
+      title: "Adaptive context-aware concept",
+      formFactor: "open form factor",
+      description: `A future direction that adapts the device around the real-world context in ${prompt}.`,
+      problemFit: "Keeps the target health concern and user goal as the primary design requirement.",
+      novelty: "The form factor is deliberately left open so a future prototype can combine sensing, feedback, or environment-aware interaction in a new way.",
+      feasibility: "Uncertain until the sensing signal, power needs, data workflow, and physical interaction are tested.",
+      risks: "Novel sensing and alerting may create false reassurance, false alarms, privacy concerns, or unexpected user burden.",
+      nextValidation: "Run a requirements workshop with a clinician, engineer, and representative user before selecting hardware."
+    },
+    {
+      id: "future-2",
+      title: "Distributed sensing ecosystem",
+      formFactor: "multi-part system",
+      description: "A future direction that spreads the task across a comfortable primary object and optional sensing or software elements.",
+      problemFit: "Could reduce burden on one device while preserving the same monitoring or support goal.",
+      novelty: "Uses coordinated components instead of assuming one wearable must perform every function.",
+      feasibility: "Requires reliable synchronization, clear setup, resilient operation when one component is missing, and careful data interpretation.",
+      risks: "More parts can increase loss, setup errors, privacy exposure, and user confusion.",
+      nextValidation: "Prototype the simplest end-to-end workflow and test whether users understand what each part does."
+    }
+  ];
+}
+
 function parseIdeation(raw, prompt, numOptions, priorDeviceSignals = []) {
   try {
     const cleaned = raw.trim().replace(/^```json\s*|```$/g, "");
@@ -1288,10 +1393,11 @@ function parseIdeation(raw, prompt, numOptions, priorDeviceSignals = []) {
       recommendedOptionId: options.some((option) => option.id === parsed.recommendedOptionId)
         ? String(parsed.recommendedOptionId)
         : options.reduce((best, option) => option.evidenceStrength.overall > best.evidenceStrength.overall ? option : best, options[0]).id,
-      options
+      options,
+      futureDirections: normalizeFutureDirections(parsed.futureDirections, prompt)
     }, prompt, numOptions, priorDeviceSignals);
   } catch {
-    return fallbackIdeationOptions(prompt, numOptions, priorDeviceSignals);
+    return { ...fallbackIdeationOptions(prompt, numOptions, priorDeviceSignals), futureDirections: fallbackFutureDirections(prompt) };
   }
 }
 
@@ -1303,9 +1409,11 @@ function objectLabel(value) {
 function objectSpecificOption(option, requestedFormFactor, index) {
   const label = objectLabel(requestedFormFactor);
   const variant = index === 0 ? "Baseline" : index === 1 ? "Modular" : index === 2 ? "Lightweight" : `Variant ${index + 1}`;
+  const currentTitle = String(option.title || "");
+  const titleMatchesRequest = normalizeDiseaseText(currentTitle).includes(normalizeDiseaseText(requestedFormFactor));
   return {
     ...option,
-    title: option.title && !/\b(patch|clip|bracelet|mouthguard|retainer|cast)\b/i.test(option.title)
+    title: currentTitle && titleMatchesRequest && !/\b(patch|clip|bracelet|mouthguard|retainer|cast)\b/i.test(currentTitle)
       ? option.title
       : `${variant} Smart ${label}`,
     formFactor: requestedFormFactor,
@@ -1339,10 +1447,15 @@ function preserveRequestedObjectIdeation(ideation, prompt) {
   };
 }
 
-async function generateIdeation({ prompt, promptProfile, evidenceBlocks, supplementalDocuments, numOptions, papers, guidelines: guidelineHits = [], subgraph = null, warnings }) {
+async function generateIdeation({ prompt, promptProfile, evidenceBlocks, supplementalDocuments, numOptions, papers, guidelines: guidelineHits = [], subgraph = null, solutionGraph = null, warnings }) {
   const preservationPrompt = `${promptProfile.originalPrompt || ""}\n${prompt}`;
-  const priorDeviceSignals = priorDeviceSignalsFromEvidence({ papers, guidelines: guidelineHits, subgraph, prompt: preservationPrompt });
-  const priorDeviceEvidence = summarizePriorDeviceSignals(priorDeviceSignals, preservationPrompt);
+  const priorDeviceSignals = solutionGraph?.signals?.length
+    ? solutionGraph.signals
+    : priorDeviceSignalsFromEvidence({ papers, guidelines: guidelineHits, subgraph, prompt: preservationPrompt });
+  const priorDeviceEvidence = [
+    summarizeSolutionGraphForPrompt(solutionGraph),
+    summarizePriorDeviceSignals(priorDeviceSignals, preservationPrompt)
+  ].filter(Boolean).join("\n\n");
   try {
     const raw = await callOllama(
       [
@@ -1368,7 +1481,7 @@ async function generateIdeation({ prompt, promptProfile, evidenceBlocks, supplem
     return preserveRequestedObjectIdeation(parseIdeation(raw, preservationPrompt, numOptions, priorDeviceSignals), preservationPrompt);
   } catch (error) {
     warnings.push(`Concept ideation failed: ${error instanceof Error ? error.message : String(error)}`);
-    return preserveRequestedObjectIdeation(fallbackIdeationOptions(preservationPrompt, numOptions, priorDeviceSignals), preservationPrompt);
+    return preserveRequestedObjectIdeation({ ...fallbackIdeationOptions(preservationPrompt, numOptions, priorDeviceSignals), futureDirections: fallbackFutureDirections(preservationPrompt) }, preservationPrompt);
   }
 }
 
@@ -1692,11 +1805,58 @@ function buildCadqueryStl(layout) {
   }
 }
 
+function buildBlenderGlb(layout) {
+  if (!existsSync(BLENDER_BIN)) throw new Error(`Blender executable not found at ${BLENDER_BIN}`);
+  const workDir = mkdtempSync(path.join(tmpdir(), "smart-health-blender-"));
+  const outputPath = path.join(workDir, "model.glb");
+  const renderPath = path.join(workDir, "preview.png");
+  const blendPath = path.join(workDir, "model.blend");
+  try {
+    const scriptPath = path.join(__dirname, "scripts", "blender_generator.py");
+    const run = spawnSync(BLENDER_BIN, ["--background", "--python", scriptPath], {
+      input: JSON.stringify({ ...layout, glbPath: outputPath, blendPath, renderPath }),
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024 * 8,
+      timeout: 120000
+    });
+    if (run.status !== 0 || !existsSync(outputPath)) {
+      throw new Error((run.stderr || run.stdout || "Blender model generation failed").trim());
+    }
+    return readFileSync(outputPath);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
+function buildBlenderPreview(layout) {
+  if (!existsSync(BLENDER_BIN)) throw new Error(`Blender executable not found at ${BLENDER_BIN}`);
+  const workDir = mkdtempSync(path.join(tmpdir(), "smart-health-blender-preview-"));
+  const outputPath = path.join(workDir, "model.glb");
+  const renderPath = path.join(workDir, "preview.png");
+  const blendPath = path.join(workDir, "model.blend");
+  try {
+    const scriptPath = path.join(__dirname, "scripts", "blender_generator.py");
+    const run = spawnSync(BLENDER_BIN, ["--background", "--python", scriptPath], {
+      input: JSON.stringify({ ...layout, glbPath: outputPath, blendPath, renderPath }),
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024 * 8,
+      timeout: 120000
+    });
+    if (run.status !== 0 || !existsSync(renderPath)) {
+      throw new Error((run.stderr || run.stdout || "Blender preview rendering failed").trim());
+    }
+    return readFileSync(renderPath);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+}
+
 function evidenceBlocksFromResult(result) {
   const standards = result.standardsReferenced || getRelevantStandards();
   return [
     result.subgraph ? `PrimeKG evidence:\n${summarizeSubgraphForPrompt(result.subgraph)}` : "PrimeKG evidence: none (no graph match).",
     `Literature evidence:\n${summarizeLiteratureForPrompt(result.literature || [])}`,
+    summarizeSolutionGraphForPrompt(result.solutionGraph),
     `Clinical/interoperability guideline evidence:\n${summarizeGuidelinesForPrompt(result.guidelines || [])}`,
     `Standards to verify against (names only, not full-text retrieved):\n${summarizeStandardsForPrompt(standards)}`,
     `User-uploaded supplemental documents:\n${summarizeSupplementalDocuments(result.supplementalDocuments || [])}`
@@ -1767,6 +1927,45 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { user });
   }
 
+  if (req.method === "PUT" && req.url === "/api/auth/profile") {
+    try {
+      const user = userFromToken(getBearerToken(req));
+      if (!user) return sendJson(res, 401, { error: "Not signed in." });
+      const body = await readJson(req);
+      const fields = {
+        affiliation: String(body.affiliation || "").trim().slice(0, 160),
+        occupation: String(body.occupation || "").trim().slice(0, 160),
+        bio: String(body.bio || "").trim().slice(0, 800),
+        googleScholarUrl: String(body.googleScholarUrl || "").trim().slice(0, 400),
+        githubUrl: String(body.githubUrl || "").trim().slice(0, 400),
+        websiteUrl: String(body.websiteUrl || "").trim().slice(0, 400),
+        linkedinUrl: String(body.linkedinUrl || "").trim().slice(0, 400)
+      };
+      for (const [label, value] of Object.entries(fields)) {
+        if (label.endsWith("Url") && value && !/^https?:\/\//i.test(value)) {
+          return sendJson(res, 400, { error: `${label} must start with http:// or https://` });
+        }
+      }
+      authDb.prepare(`
+        UPDATE users SET affiliation = ?, occupation = ?, bio = ?, google_scholar_url = ?, github_url = ?, website_url = ?, linkedin_url = ?
+        WHERE id = ?
+      `).run(
+        fields.affiliation,
+        fields.occupation,
+        fields.bio,
+        fields.googleScholarUrl,
+        fields.githubUrl,
+        fields.websiteUrl,
+        fields.linkedinUrl,
+        user.id
+      );
+      const updated = authDb.prepare("SELECT * FROM users WHERE id = ?").get(user.id);
+      return sendJson(res, 200, { user: publicUser(updated) });
+    } catch (error) {
+      return sendJson(res, 500, { error: "Could not save profile", detail: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
   if (req.method === "POST" && req.url === "/api/auth/logout") {
     const token = getBearerToken(req);
     if (token) authDb.prepare("DELETE FROM sessions WHERE token = ?").run(token);
@@ -1801,6 +2000,40 @@ const server = http.createServer(async (req, res) => {
         error: "CadQuery STL generation failed",
         detail: error instanceof Error ? error.message : String(error),
         install: "Install CadQuery with `python3 -m pip install cadquery` or use the JSCAD fallback download."
+      });
+    }
+  }
+
+  if (req.method === "POST" && req.url === "/api/blender-glb") {
+    try {
+      const { layout } = await readJson(req);
+      if (!layout?.components?.length && !layout?.formFactor) return sendJson(res, 400, { error: "layout with a form factor or components is required" });
+      const glb = buildBlenderGlb(layout);
+      const name = String(layout.device || "smart-health-blender").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "smart-health-blender";
+      return sendBinary(res, 200, glb, {
+        "Content-Type": "model/gltf-binary",
+        "Content-Disposition": `attachment; filename="${name}-blender.glb"`
+      });
+    } catch (error) {
+      return sendJson(res, 501, {
+        error: "Blender preview generation failed",
+        detail: error instanceof Error ? error.message : String(error),
+        install: "Set BLENDER_BIN to the Blender executable path if Blender is installed somewhere other than /Applications/Blender.app."
+      });
+    }
+  }
+
+  if (req.method === "POST" && req.url === "/api/blender-preview") {
+    try {
+      const { layout } = await readJson(req);
+      if (!layout?.components?.length && !layout?.formFactor) return sendJson(res, 400, { error: "layout with a form factor or components is required" });
+      const png = buildBlenderPreview(layout);
+      return sendBinary(res, 200, png, { "Content-Type": "image/png" });
+    } catch (error) {
+      return sendJson(res, 501, {
+        error: "Blender preview rendering failed",
+        detail: error instanceof Error ? error.message : String(error),
+        install: "Set BLENDER_BIN to the Blender executable path if Blender is installed somewhere other than /Applications/Blender.app."
       });
     }
   }
@@ -1932,10 +2165,19 @@ const server = http.createServer(async (req, res) => {
         warnings.push("Guideline/standards index not built yet — run `pnpm --dir web run build:guidelines`.");
       }
       const standards = getRelevantStandards();
+      const solutionGraph = buildSolutionGraph({
+        prompt: [promptProfile.originalPrompt, retrievalPrompt].filter(Boolean).join("\n"),
+        extraction,
+        subgraph,
+        papers,
+        guidelines: guidelineHits,
+        supplementalDocuments
+      });
 
       const evidenceBlocks = [
         subgraph ? `PrimeKG evidence:\n${summarizeSubgraphForPrompt(subgraph)}` : "PrimeKG evidence: none (no graph match).",
         `Literature evidence:\n${summarizeLiteratureForPrompt(papers)}`,
+        summarizeSolutionGraphForPrompt(solutionGraph),
         `Clinical/interoperability guideline evidence:\n${summarizeGuidelinesForPrompt(guidelineHits)}`,
         `Standards to verify against (names only, not full-text retrieved):\n${summarizeStandardsForPrompt(standards)}`,
         `User-uploaded supplemental documents:\n${summarizeSupplementalDocuments(supplementalDocuments)}`
@@ -1950,6 +2192,7 @@ const server = http.createServer(async (req, res) => {
         papers,
         guidelines: guidelineHits,
         subgraph,
+        solutionGraph,
         warnings
       });
 
@@ -1960,6 +2203,7 @@ const server = http.createServer(async (req, res) => {
         extraction,
         subgraph,
         literature: papers,
+        solutionGraph,
         guidelines: guidelineHits,
         standardsReferenced: standards,
         proposal: ideation.summary,
@@ -1990,7 +2234,19 @@ const server = http.createServer(async (req, res) => {
       const newDocuments = await parseUploadedDocuments(documents, warnings);
       const supplementalDocuments = [...(previousResult.supplementalDocuments || []), ...newDocuments].slice(-6);
       const refinementProfile = await normalizeRefinementForRole(prompt, audience, previousResult, warnings);
-      const evidenceBlocks = evidenceBlocksFromResult({ ...previousResult, supplementalDocuments });
+      const solutionGraph = buildSolutionGraph({
+        prompt: [
+          previousResult.promptProfile?.originalPrompt,
+          previousResult.promptProfile?.engineeringPrompt,
+          refinementProfile.engineeringPrompt
+        ].filter(Boolean).join("\n"),
+        extraction: previousResult.extraction || {},
+        subgraph: previousResult.subgraph || null,
+        papers: previousResult.literature || [],
+        guidelines: previousResult.guidelines || [],
+        supplementalDocuments
+      });
+      const evidenceBlocks = evidenceBlocksFromResult({ ...previousResult, supplementalDocuments, solutionGraph });
       const optionCount = previousResult.ideation?.options?.length || 3;
       const ideation = await generateIdeation({
         prompt: `${previousResult.promptProfile?.engineeringPrompt || previousPrompt || ""}\nIdeation refinement: ${refinementProfile.engineeringPrompt}\nPrevious options: ${JSON.stringify(previousResult.ideation?.options || []).slice(0, 5000)}`,
@@ -2001,6 +2257,7 @@ const server = http.createServer(async (req, res) => {
         papers: previousResult.literature || [],
         guidelines: previousResult.guidelines || [],
         subgraph: previousResult.subgraph || null,
+        solutionGraph,
         warnings
       });
 
@@ -2011,6 +2268,7 @@ const server = http.createServer(async (req, res) => {
         selectedConcept: null,
         cadLayout: null,
         supplementalDocuments,
+        solutionGraph,
         warnings,
         latestRefinementProfile: refinementProfile,
         refinementHistory: [
