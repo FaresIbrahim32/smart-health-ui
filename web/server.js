@@ -904,7 +904,7 @@ Rules:
 - Include varied biomedical device forms when appropriate, such as a bottle, glove, cup holder, sword, patch, clip-on, handheld device, textile, wristband, mobile app, or hybrid system.
 - If the user explicitly asks for a physical shape or product family such as sword, glove, cup holder, sleeve, shoe, insole, helmet, cup, bottle, ring, belt, or strap, preserve that as the formFactor unless it is unsafe or contradicted by the request.
 - If the user asks generically for a "device", "system", "wearable", "tool", or "solution", choose concepts from prior similar device/form-factor signals found in the retrieved papers and evidence notes. Only improvise a new generic form such as clip-on, patch, or handheld when the evidence notes say there are few or no prior device-form signals.
-- After the evidence-led options, also generate 2 futureDirections. These are intentionally open-ended research directions, not claims that a validated product exists. They may use a new form factor or sensing strategy instead of copying prior solutions, but must still address the same health concern, user, body context, goals, and safety constraints.
+- After the evidence-led options, also generate 2 futureDirections. These are intentionally open-ended research directions, not claims that a validated product exists. They may use a new form factor or sensing strategy instead of copying prior solutions, but must still address the same health concern, user, body context, goals, and safety constraints. Ground each direction in the exact extracted goal and prior-solution graph signals supplied below. Make the two directions materially different and specific to this prompt; never reuse generic labels such as "Adaptive context-aware concept" or "Distributed sensing ecosystem".
 - Future directions must explain why the idea could help, what makes it novel, what could make it difficult, the main safety/clinical unknowns, and the next human-reviewed validation step. Do not let novelty override the retrieved evidence or present speculation as medical advice.
 - If the user explicitly asks for an unusual or new form factor, keep that desired form in at least one option and use the same disease, literature, guideline, and knowledge-graph evidence flow to discuss fit, risks, and trade-offs.
 - For hydration, sweat, sports, pediatric athlete, drink, water, or bottle prompts, use bottle/container/hydration form factors. Do not use retainer or mouthguard for these prompts.
@@ -1319,26 +1319,32 @@ function normalizeFutureDirections(directions, prompt) {
   }));
 }
 
-function fallbackFutureDirections(prompt) {
+function fallbackFutureDirections(prompt, priorDeviceSignals = []) {
+  const signals = [...new Map(priorDeviceSignals
+    .map((signal) => [String(signal.formFactor || signal.title || "").trim().toLowerCase(), signal])
+    .filter(([label]) => label && label !== "unknown")).values()];
+  const primary = signals[0]?.formFactor || signals[0]?.title || "the retrieved device family";
+  const secondary = signals[1]?.formFactor || signals[1]?.title || "a coordinated sensing system";
+  const context = String(prompt || "the requested health goal").trim();
   return [
     {
       id: "future-1",
-      title: "Adaptive context-aware concept",
-      formFactor: "open form factor",
-      description: `A future direction that adapts the device around the real-world context in ${prompt}.`,
+      title: `Context-aware ${objectLabel(primary)} extension`,
+      formFactor: primary,
+      description: `A future ${primary} direction that adapts to the user context in ${context}, using the retrieved device family as a starting point while adding a new sensing or feedback relationship.`,
       problemFit: "Keeps the target health concern and user goal as the primary design requirement.",
-      novelty: "The form factor is deliberately left open so a future prototype can combine sensing, feedback, or environment-aware interaction in a new way.",
+      novelty: `Builds on the retrieved ${primary} signal without assuming the prior implementation is sufficient; the new interaction should be selected for this prompt's context.`,
       feasibility: "Uncertain until the sensing signal, power needs, data workflow, and physical interaction are tested.",
       risks: "Novel sensing and alerting may create false reassurance, false alarms, privacy concerns, or unexpected user burden.",
       nextValidation: "Run a requirements workshop with a clinician, engineer, and representative user before selecting hardware."
     },
     {
       id: "future-2",
-      title: "Distributed sensing ecosystem",
-      formFactor: "multi-part system",
-      description: "A future direction that spreads the task across a comfortable primary object and optional sensing or software elements.",
+      title: `${objectLabel(secondary)} plus complementary support`,
+      formFactor: secondary,
+      description: `A future direction that combines ${secondary} with a complementary physical or digital element chosen for ${context}, rather than defaulting to a generic patch or clip-on.`,
       problemFit: "Could reduce burden on one device while preserving the same monitoring or support goal.",
-      novelty: "Uses coordinated components instead of assuming one wearable must perform every function.",
+      novelty: `Explores a different system boundary from the ${primary} family so the health goal can be supported through a more appropriate interaction or placement.`,
       feasibility: "Requires reliable synchronization, clear setup, resilient operation when one component is missing, and careful data interpretation.",
       risks: "More parts can increase loss, setup errors, privacy exposure, and user confusion.",
       nextValidation: "Prototype the simplest end-to-end workflow and test whether users understand what each part does."
@@ -1397,7 +1403,7 @@ function parseIdeation(raw, prompt, numOptions, priorDeviceSignals = []) {
       futureDirections: normalizeFutureDirections(parsed.futureDirections, prompt)
     }, prompt, numOptions, priorDeviceSignals);
   } catch {
-    return { ...fallbackIdeationOptions(prompt, numOptions, priorDeviceSignals), futureDirections: fallbackFutureDirections(prompt) };
+    return { ...fallbackIdeationOptions(prompt, numOptions, priorDeviceSignals), futureDirections: fallbackFutureDirections(prompt, priorDeviceSignals) };
   }
 }
 
@@ -1481,7 +1487,7 @@ async function generateIdeation({ prompt, promptProfile, evidenceBlocks, supplem
     return preserveRequestedObjectIdeation(parseIdeation(raw, preservationPrompt, numOptions, priorDeviceSignals), preservationPrompt);
   } catch (error) {
     warnings.push(`Concept ideation failed: ${error instanceof Error ? error.message : String(error)}`);
-    return preserveRequestedObjectIdeation({ ...fallbackIdeationOptions(preservationPrompt, numOptions, priorDeviceSignals), futureDirections: fallbackFutureDirections(preservationPrompt) }, preservationPrompt);
+    return preserveRequestedObjectIdeation({ ...fallbackIdeationOptions(preservationPrompt, numOptions, priorDeviceSignals), futureDirections: fallbackFutureDirections(preservationPrompt, priorDeviceSignals) }, preservationPrompt);
   }
 }
 

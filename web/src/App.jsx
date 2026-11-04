@@ -41,6 +41,7 @@ import {
   Sparkles,
   Sun,
   Thermometer,
+  Trash2,
   UserPlus,
   UserRound,
   UsersRound,
@@ -571,6 +572,7 @@ function App() {
   const [acceptedResult, setAcceptedResult] = useState(storedWorkspace.acceptedResult || null);
   const [acceptedPrompt, setAcceptedPrompt] = useState(storedWorkspace.acceptedPrompt || "");
   const [designHistory, setDesignHistory] = useState(storedWorkspace.designHistory || []);
+  const [futureDirectionDraft, setFutureDirectionDraft] = useState(null);
   const [currentVersionId, setCurrentVersionId] = useState(storedWorkspace.currentVersionId || null);
   const [acceptedVersionId, setAcceptedVersionId] = useState(storedWorkspace.acceptedVersionId || null);
   const [sidebarOpen, setSidebarOpen] = useState(storedWorkspace.sidebarOpen ?? true);
@@ -583,7 +585,8 @@ function App() {
     }
     return "navy";
   });
-  const ActiveIcon = pages.find((page) => page.id === active)?.icon || (active === "profile" ? profilePage.icon : Activity);
+  const activePage = pages.find((page) => page.id === active) || (active === "future-brief" ? { label: "Future Direction Brief", icon: Sparkles } : profilePage);
+  const ActiveIcon = activePage.icon;
   const isDesignComplete = hasIdeation(designResult);
   const isDesignAccepted = hasIdeation(acceptedResult) && Boolean(acceptedResult?.selectedConcept);
   const pageDisabled = (pageId) => (
@@ -730,6 +733,29 @@ function App() {
     setActive("explore");
   }
 
+  function clearCurrentDesignSession() {
+    if (!window.confirm("Delete the current design session and clear its active workspace? Your account and profile will remain.")) return;
+    setDesignResult(null);
+    setDesignPrompt("");
+    setAcceptedResult(null);
+    setAcceptedPrompt("");
+    setCurrentVersionId(null);
+    setAcceptedVersionId(null);
+    setActive("target");
+    setTopPanel(null);
+  }
+
+  function deleteHistoryVersion(id) {
+    if (!window.confirm("Delete this saved design version from history?")) return;
+    setDesignHistory((current) => current.filter((item) => item.id !== id).map((item, index) => ({ ...item, version: index + 1 })));
+    if (currentVersionId === id) setCurrentVersionId(null);
+    if (acceptedVersionId === id) {
+      setAcceptedVersionId(null);
+      setAcceptedResult(null);
+      setAcceptedPrompt("");
+    }
+  }
+
   if (authStatus !== "signed-in") {
     return <LandingPage onAuth={handleAuth} checking={authStatus === "checking"} />;
   }
@@ -788,7 +814,7 @@ function App() {
         <section className="screen">
           <div className="screen-title">
             <ActiveIcon size={22} />
-            <span>{pages.find((page) => page.id === active)?.label || profilePage.label}</span>
+            <span>{activePage.label}</span>
           </div>
           {!["pipeline", "knowledge", "history", "profile"].includes(active) && (
             <WorkflowProgress
@@ -877,7 +903,24 @@ function App() {
           )}
           {active === "evidence" && <EvidencePage prompt={designPrompt} result={designResult} viewpoint={evidenceViewpoint} onViewpointChange={setEvidenceViewpoint} onBack={() => setActive("results")} />}
           {active === "solutions" && <PreviousSolutionsPage result={designResult} viewpoint={evidenceViewpoint} onViewpointChange={setEvidenceViewpoint} onBack={() => setActive("results")} />}
-          {active === "future" && <FutureDirectionsPage result={designResult} onBack={() => setActive("results")} />}
+          {active === "future" && <FutureDirectionsPage result={designResult} onBack={() => setActive("results")} onSelectDirection={(direction) => { setFutureDirectionDraft(direction); setActive("future-brief"); }} />}
+          {active === "future-brief" && futureDirectionDraft && (
+            <FutureDirectionBriefPage
+              direction={futureDirectionDraft}
+              originalPrompt={designPrompt}
+              result={designResult}
+              onBack={() => setActive("future")}
+              onComplete={(prompt, result) => {
+                setDesignPrompt(prompt);
+                setDesignResult(result);
+                setAcceptedPrompt("");
+                setAcceptedResult(null);
+                setAcceptedVersionId(null);
+                recordDesignVersion(prompt, result, "Future direction build");
+                setActive("results");
+              }}
+            />
+          )}
           {active === "history" && (
             <HistoryPage
               history={designHistory}
@@ -885,6 +928,9 @@ function App() {
               acceptedVersionId={acceptedVersionId}
               onOpenVersion={openHistoryVersion}
               onAcceptVersion={acceptHistoryVersion}
+              onDeleteVersion={deleteHistoryVersion}
+              onClearCurrentSession={clearCurrentDesignSession}
+              hasCurrentSession={Boolean(designResult || designPrompt || acceptedResult || acceptedPrompt)}
               onCreateNew={() => setActive("new")}
             />
           )}
@@ -1326,8 +1372,13 @@ function NewDesignPage({ ideationTarget, workflowMode, result, onResult, onDirec
   const [status, setStatus] = useState("idle");
   const [generationStep, setGenerationStep] = useState(0);
   const [error, setError] = useState(null);
+  const [audiencePickerOpen, setAudiencePickerOpen] = useState(true);
+  const [followupStarted, setFollowupStarted] = useState(false);
+  const [guidedStep, setGuidedStep] = useState(0);
+  const [guidedAnswers, setGuidedAnswers] = useState({});
   const isComplete = hasIdeation(result);
   const activeAudience = promptAudiences.find((item) => item.id === promptAudience) || promptAudiences[0];
+  const AudienceIcon = activeAudience.icon;
   const targetLabel = ideationTargets.find((item) => item.id === ideationTarget)?.title || "CAD Design";
   const workflowLabel = workflowModes.find((item) => item.id === workflowMode)?.label || "Phase 1 + Phase 2";
   const isPhase2Only = workflowMode === "phase2";
@@ -1343,7 +1394,19 @@ function NewDesignPage({ ideationTarget, workflowMode, result, onResult, onDirec
     return () => timers.forEach(clearTimeout);
   }, [status]);
 
-  async function runDesignSearch(event) {
+  function startGuidedBrief(event) {
+    event.preventDefault();
+    const trimmed = prompt.trim();
+    if (!trimmed || status === "loading") return;
+    // Clear any previous result before opening a new guided brief so the old completion gate cannot hide the follow-up form.
+    onResult("", null);
+    setGuidedAnswers({ device: trimmed });
+    setGuidedStep(0);
+    setFollowupStarted(true);
+    setError(null);
+  }
+
+  async function runDesignSearch(event, answers = guidedAnswers) {
     event.preventDefault();
     const trimmed = prompt.trim();
     if (!trimmed || status === "loading") return;
@@ -1354,23 +1417,41 @@ function NewDesignPage({ ideationTarget, workflowMode, result, onResult, onDirec
 
     try {
       const documents = await filesToDocuments(supportFiles);
+      const combinedPrompt = guidedCadPrompt(answers, trimmed);
       const response = await fetch(`http://127.0.0.1:3001${isPhase2Only ? "/api/direct-cad" : "/api/design-search"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: trimmed, audience: promptAudience, numOptions, documents, ideationTarget, workflowMode })
+        body: JSON.stringify({ prompt: combinedPrompt, audience: promptAudience, numOptions, documents, ideationTarget, workflowMode })
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.detail || data.error || (isPhase2Only ? "Direct CAD generation failed" : "Design search failed"));
+      const guidedResult = { ...data, cadBrief: { ...answers, completed: true } };
       if (isPhase2Only) {
-        onDirectCadResult(trimmed, data);
+        onDirectCadResult(combinedPrompt, guidedResult);
       } else {
-        onResult(trimmed, data);
+        onResult(combinedPrompt, guidedResult);
       }
       setStatus("idle");
     } catch (err) {
       setError(requestErrorMessage(err, isPhase2Only ? "Direct CAD generation failed" : "Design search failed"));
       setStatus("error");
     }
+  }
+
+  function advanceGuidedBrief(event) {
+    event.preventDefault();
+    const questions = guidedCadQuestions.slice(1);
+    const question = questions[guidedStep];
+    const answer = String(guidedAnswers[question.key] || "").trim();
+    if (!answer || status === "loading") return;
+    const nextAnswers = { ...guidedAnswers, [question.key]: answer };
+    if (guidedStep < questions.length - 1) {
+      setGuidedAnswers(nextAnswers);
+      setGuidedStep((step) => step + 1);
+      return;
+    }
+    setGuidedAnswers(nextAnswers);
+    runDesignSearch(event, nextAnswers);
   }
 
   return (
@@ -1384,21 +1465,30 @@ function NewDesignPage({ ideationTarget, workflowMode, result, onResult, onDirec
           <span className="chip">{workflowLabel}</span>
         </div>
       </div>
-      <h2>1. Who is writing the prompt?</h2>
-      <div className="role-select-grid">
-        {promptAudiences.map(({ id, label, icon: Icon, description }) => (
-          <button
-            type="button"
-            className={promptAudience === id ? "role-card active" : "role-card"}
-            key={id}
-            onClick={() => setPromptAudience(id)}
-          >
-            <Icon size={24} />
-            <span>{label}</span>
-            <small>{description}</small>
-          </button>
-        ))}
-      </div>
+      {audiencePickerOpen ? <>
+        <h2>1. Who is writing the prompt?</h2>
+        <div className="role-select-grid">
+          {promptAudiences.map(({ id, label, icon: Icon, description }) => (
+            <button
+              type="button"
+              className={promptAudience === id ? "role-card active" : "role-card"}
+              key={id}
+              onClick={() => {
+                setPromptAudience(id);
+                setAudiencePickerOpen(false);
+              }}
+            >
+              <Icon size={24} />
+              <span>{label}</span>
+              <small>{description}</small>
+            </button>
+          ))}
+        </div>
+      </> : <div className="selected-audience" aria-label={`Prompt audience: ${activeAudience.label}`}>
+        <AudienceIcon size={18} />
+        <span>Prompt mode: <strong>{activeAudience.label}</strong></span>
+        <button type="button" className="audience-change" onClick={() => setAudiencePickerOpen(true)}>Change</button>
+      </div>}
       <h2>2. Describe the {isPhase2Only ? "CAD object and engineering constraints" : "health need or design goal"}</h2>
       <div className="prompt-example"><Sparkles size={24} /><div><strong>{activeAudience.label} prompt mode</strong><p>{isPhase2Only ? "Phase 2 only accepts direct object requests with optional sizing, fit, weight, comfort, material, and use constraints." : activeAudience.description}</p></div></div>
       <div className="ideation-controls">
@@ -1414,7 +1504,7 @@ function NewDesignPage({ ideationTarget, workflowMode, result, onResult, onDirec
           <input type="file" accept=".pdf,.txt,.md" multiple onChange={(event) => setSupportFiles(Array.from(event.target.files || []))} />
         </label>
       </div>
-      <form className="composer" onSubmit={runDesignSearch}>
+      {!followupStarted && <form className="composer" onSubmit={startGuidedBrief}>
         <MessageSquare size={32} />
         <textarea
           aria-label="Describe your design goal"
@@ -1423,11 +1513,27 @@ function NewDesignPage({ ideationTarget, workflowMode, result, onResult, onDirec
           placeholder={isPhase2Only ? "Example: Generate a knee sleeve CAD concept for a 5'10 adult around 180 lb, soft breathable material, adjustable compression, easy to clean, no biological evidence needed." : promptPlaceholderFor(promptAudience)}
           rows={2}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) runDesignSearch(event);
+            if (event.key === "Enter" && !event.shiftKey) startGuidedBrief(event);
           }}
         />
-        <button type="submit" disabled={status === "loading" || !prompt.trim()}><Send /></button>
-      </form>
+        <button type="submit" disabled={status === "loading" || !prompt.trim()} aria-label="Continue to guided brief"><Send /></button>
+      </form>}
+
+      {followupStarted && !isComplete && status !== "loading" && (
+        <GuidedCadIntake
+          questions={guidedCadQuestions.slice(1)}
+          step={guidedStep}
+          answers={guidedAnswers}
+          status={status}
+          error={error}
+          phaseLabel="Interactive Phase 1 + Phase 2"
+          submitLabel="Run evidence + ideation"
+          loadingLabel="Running retrieval from the complete brief..."
+          onChange={(value) => setGuidedAnswers((current) => ({ ...current, [guidedCadQuestions.slice(1)[guidedStep].key]: value }))}
+          onSubmit={advanceGuidedBrief}
+          onBack={() => setGuidedStep((current) => Math.max(0, current - 1))}
+        />
+      )}
 
       {status === "loading" && (
         <div className="generation-panel">
@@ -1441,12 +1547,12 @@ function NewDesignPage({ ideationTarget, workflowMode, result, onResult, onDirec
           {error}
         </div>
       )}
-      {!isPhase2Only && <div className={isComplete ? "results-gate ready" : "results-gate"}>
+      {!isPhase2Only && isComplete && <div className="results-gate ready">
         <div>
-          <strong>{isComplete ? "Concept options are ready" : "Architecture page is locked"}</strong>
-          <p>{isComplete ? "Review the imagined device options, trade-offs, and scores before choosing one." : "The button activates after evidence retrieval and concept ideation finish."}</p>
+          <strong>Concept options are ready</strong>
+          <p>Review the imagined device options, trade-offs, and scores before choosing one.</p>
         </div>
-        <button className="primary gate-button" disabled={!isComplete} onClick={onOpenResults}>Open Architecture</button>
+        <button className="primary gate-button" onClick={onOpenResults}>Open Architecture</button>
       </div>}
     </div>
   );
@@ -1454,10 +1560,10 @@ function NewDesignPage({ ideationTarget, workflowMode, result, onResult, onDirec
 
 function GenerationSteps({ activeStep = 0, phase = "phase1" }) {
   const phase1Steps = [
-    ["Preparing context", "Reading uploaded PDFs, manuals, reports, and the user role."],
-    ["Parsing design intent", "Extracting condition, symptoms, target user, and device intent."],
-    ["Retrieving evidence", "Searching PrimeKG, PubTator, guidelines, Semantic Scholar, and Europe PMC."],
-    ["Scoring concept options", "Ranking biological fit, prior device signals, trade-offs, and human review needs."]
+    ["Preparing context", "Reading the initial prompt, guided follow-ups, uploaded PDFs, manuals, reports, and the user role."],
+    ["Parsing design intent", "Extracting condition, symptoms, device form, hardware, priorities, fit, and assembly needs from the complete brief."],
+    ["Retrieving evidence", "Searching PrimeKG, PubTator, guidelines, Semantic Scholar, and Europe PMC using the complete prompt and follow-ups."],
+    ["Scoring concept options", "Ranking biological fit, requested hardware, user priorities, prior device signals, trade-offs, and human review needs."]
   ];
   const phase2Steps = [
     ["Reading object request", "Checking the requested form, sizing notes, comfort needs, and uploaded references."],
@@ -1756,14 +1862,17 @@ function PreviousSolutionsPage({ result, viewpoint, onViewpointChange, onBack })
   );
 }
 
-function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersion, onAcceptVersion, onCreateNew }) {
+function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersion, onAcceptVersion, onDeleteVersion, onClearCurrentSession, hasCurrentSession, onCreateNew }) {
   if (!history.length) {
     return (
       <div className="empty-results">
         <History size={42} />
         <h1>No design history yet</h1>
         <p>Generate a design, then refine it as many times as needed. Every completed version will appear here.</p>
-        <button className="primary gate-button" onClick={onCreateNew}>Start a New Design</button>
+        <div className="history-empty-actions">
+          <button className="primary gate-button" onClick={onCreateNew}>Start a New Design</button>
+          {hasCurrentSession && <button className="danger-action" onClick={onClearCurrentSession}><Trash2 size={16} />Delete Current Session</button>}
+        </div>
       </div>
     );
   }
@@ -1776,10 +1885,11 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
           <h1>{history.length} generated version{history.length === 1 ? "" : "s"}</h1>
           <p>Review earlier drafts, reopen a version for refinement, or choose the exact design that should drive RAG Exploration and the CAD Workspace.</p>
         </div>
-        <div className="completion-card">
+        <div className="completion-card history-session-controls">
           <History size={28} />
           <strong>{acceptedVersionId ? "Accepted version selected" : "No accepted version yet"}</strong>
-              <span>{acceptedVersionId ? "RAG and CAD are using the concept marked Accepted." : "Use I Like This Concept here or on the architecture page."}</span>
+          <span>{acceptedVersionId ? "RAG and CAD are using the concept marked Accepted." : "Use I Like This Concept here or on the architecture page."}</span>
+          {hasCurrentSession && <button className="danger-action" onClick={onClearCurrentSession}><Trash2 size={16} />Delete Current Session</button>}
         </div>
       </section>
 
@@ -1834,6 +1944,7 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
               <div className="history-actions">
                 <button className="primary" onClick={() => onOpenVersion(item)}>Review Version</button>
                 <button className="success" onClick={() => onAcceptVersion(item)} disabled={isAccepted}>{isAccepted ? "Accepted" : "I Like This Concept"}</button>
+                <button className="danger-action" onClick={() => onDeleteVersion(item.id)}><Trash2 size={16} />Delete From History</button>
               </div>
             </article>
           );
@@ -1843,7 +1954,7 @@ function HistoryPage({ history, currentVersionId, acceptedVersionId, onOpenVersi
   );
 }
 
-function FutureDirectionsPage({ result, onBack }) {
+function FutureDirectionsPage({ result, onBack, onSelectDirection }) {
   const directions = result?.ideation?.futureDirections || [];
   if (!result || !directions.length) {
     return (
@@ -1892,12 +2003,12 @@ function FutureDirectionsPage({ result, onBack }) {
         </article>
       </section>
 
-      <FutureDirectionsPanel directions={directions} />
+      <FutureDirectionsPanel directions={directions} onSelectDirection={onSelectDirection} />
     </div>
   );
 }
 
-function FutureDirectionsPanel({ directions = [] }) {
+function FutureDirectionsPanel({ directions = [], onSelectDirection }) {
   if (!directions.length) return null;
   return (
     <section className="future-directions-panel" aria-labelledby="future-directions-title">
@@ -1927,10 +2038,103 @@ function FutureDirectionsPanel({ directions = [] }) {
               <div><b>Risks to review</b><span>{direction.risks}</span></div>
               <div><b>Next validation</b><span>{direction.nextValidation}</span></div>
             </div>
+            <button type="button" className="primary future-direction-build" onClick={() => onSelectDirection?.(direction)}>
+              Build this direction from scratch
+            </button>
           </details>
         ))}
       </div>
     </section>
+  );
+}
+
+function FutureDirectionBriefPage({ direction, originalPrompt, result, onBack, onComplete }) {
+  const [step, setStep] = useState(0);
+  const [answers, setAnswers] = useState(() => ({
+    device: `${direction.title} — ${direction.formFactor}. ${direction.description}`
+  }));
+  const [status, setStatus] = useState("idle");
+  const [error, setError] = useState(null);
+  const [generationStep, setGenerationStep] = useState(0);
+
+  useEffect(() => {
+    if (status !== "loading") {
+      setGenerationStep(0);
+      return undefined;
+    }
+    const timers = [900, 2400, 5200, 9200].map((delay, index) => setTimeout(() => setGenerationStep(index + 1), delay));
+    return () => timers.forEach(clearTimeout);
+  }, [status]);
+
+  async function submit(event) {
+    event.preventDefault();
+    const questions = guidedCadQuestions.slice(1);
+    const question = questions[step];
+    const answer = String(answers[question.key] || "").trim();
+    if (!answer || status === "loading") return;
+    const nextAnswers = { ...answers, [question.key]: answer };
+    if (step < questions.length - 1) {
+      setAnswers(nextAnswers);
+      setStep((current) => current + 1);
+      return;
+    }
+
+    setAnswers(nextAnswers);
+    setStatus("loading");
+    setError(null);
+    try {
+      const prompt = futureDirectionPrompt({ originalPrompt, direction, answers: nextAnswers, result });
+      const response = await fetch("http://127.0.0.1:3001/api/design-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, audience: "engineer", numOptions: 3, documents: [], ideationTarget: "cad", workflowMode: "typical" })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || data.error || "Future direction build failed");
+      onComplete(prompt, { ...data, cadBrief: { ...nextAnswers, completed: true, futureDirection: direction } });
+    } catch (requestError) {
+      setError(requestErrorMessage(requestError, "Future direction build failed"));
+      setStatus("error");
+    }
+  }
+
+  const questions = guidedCadQuestions.slice(1);
+  return (
+    <div className="review-page future-brief-page">
+      <section className="generated-hero review-hero">
+        <div>
+          <span className="eyebrow">Future direction build</span>
+          <h1>Turn this idea into a new design brief</h1>
+          <p>Answer the same six engineering questions from scratch. The selected AI direction stays attached to every answer and guides the next evidence-backed concept search.</p>
+        </div>
+        <article className="panel future-basis-card selected-future-direction">
+          <Sparkles size={22} />
+          <strong>{direction.title}</strong>
+          <span>{direction.formFactor}</span>
+          <p>{direction.description}</p>
+        </article>
+      </section>
+      {status === "loading" ? (
+        <div className="generation-panel">
+          <h3><RefreshCw size={20} />Building from the selected future direction</h3>
+          <GenerationSteps activeStep={generationStep} phase="phase1" />
+        </div>
+      ) : (
+        <GuidedCadIntake
+          questions={questions}
+          step={step}
+          answers={answers}
+          status={status}
+          error={error}
+          phaseLabel="Future direction · six-question brief"
+          submitLabel="Build this future direction"
+          loadingLabel="Searching evidence and generating concepts..."
+          onChange={(value) => setAnswers((current) => ({ ...current, [questions[step].key]: value }))}
+          onSubmit={submit}
+          onBack={() => step === 0 ? onBack() : setStep((current) => current - 1)}
+        />
+      )}
+    </div>
   );
 }
 
@@ -2827,8 +3031,13 @@ function CadPage({ prompt, result, onResultUpdate }) {
   const [cadRefinement, setCadRefinement] = useState("");
   const [cadRefineAudience, setCadRefineAudience] = useState("engineer");
   const [cadSupportFiles, setCadSupportFiles] = useState([]);
+  const [guidedStep, setGuidedStep] = useState(0);
+  const [guidedAnswers, setGuidedAnswers] = useState(() => initialGuidedCadAnswers(selectedConcept));
+  const [guidedStatus, setGuidedStatus] = useState("idle");
+  const [guidedError, setGuidedError] = useState(null);
   const specLayout = useMemo(() => result?.cadLayout || buildInstantSpecLayout(result, selectedConcept), [result, selectedConcept]);
-  const hasGeneratedSpecs = Boolean(specLayout);
+  const guidedComplete = Boolean(result?.cadBrief?.completed);
+  const hasGeneratedSpecs = Boolean(specLayout && guidedComplete);
   const showGeneratedDetails = cadMode === "generated" && hasGeneratedSpecs;
   const insights = cadInsightCards({ ...result, cadLayout: specLayout });
 
@@ -2839,6 +3048,10 @@ function CadPage({ prompt, result, onResultUpdate }) {
   useEffect(() => {
     setShowPreview(false);
     setSpecsAccepted(false);
+    setGuidedStep(0);
+    setGuidedAnswers(result?.cadBrief?.completed ? result.cadBrief : initialGuidedCadAnswers(selectedConcept));
+    setGuidedStatus("idle");
+    setGuidedError(null);
   }, [selectedConcept?.id, specLayout?.device]);
 
   function acceptSpecs() {
@@ -2849,6 +3062,44 @@ function CadPage({ prompt, result, onResultUpdate }) {
   function generatePreview() {
     if (!specsAccepted) return;
     setShowPreview(true);
+  }
+
+  async function advanceGuidedCad(event) {
+    event.preventDefault();
+    const question = guidedCadQuestions[guidedStep];
+    const answer = String(guidedAnswers[question.key] || "").trim();
+    if (!answer || guidedStatus === "loading") return;
+
+    const nextAnswers = { ...guidedAnswers, [question.key]: answer };
+    if (guidedStep < guidedCadQuestions.length - 1) {
+      setGuidedAnswers(nextAnswers);
+      setGuidedStep((step) => step + 1);
+      return;
+    }
+
+    setGuidedAnswers(nextAnswers);
+    setGuidedStatus("loading");
+    setGuidedError(null);
+    try {
+      const guidedPrompt = guidedCadPrompt(nextAnswers, prompt);
+      const response = await fetch("http://127.0.0.1:3001/api/cad-refine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: guidedPrompt,
+          result: { ...result, selectedConcept, cadLayout: specLayout },
+          audience: "engineer",
+          documents: []
+        })
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || data.detail || "Guided CAD brief failed");
+      onResultUpdate?.({ ...data, cadBrief: { ...nextAnswers, completed: true } });
+      setGuidedStatus("idle");
+    } catch (error) {
+      setGuidedError(error instanceof Error ? error.message : "Guided CAD brief failed");
+      setGuidedStatus("error");
+    }
   }
 
   async function refineCad(event) {
@@ -2891,7 +3142,18 @@ function CadPage({ prompt, result, onResultUpdate }) {
         </article>
       </aside>
       <section className="cad-stage">
-        {cadMode === "generated" && specLayout && !showPreview && (
+        {cadMode === "generated" && !guidedComplete && (
+          <GuidedCadIntake
+            step={guidedStep}
+            answers={guidedAnswers}
+            status={guidedStatus}
+            error={guidedError}
+            onChange={(value) => setGuidedAnswers((current) => ({ ...current, [guidedCadQuestions[guidedStep].key]: value }))}
+            onSubmit={advanceGuidedCad}
+            onBack={() => setGuidedStep((current) => Math.max(0, current - 1))}
+          />
+        )}
+        {cadMode === "generated" && specLayout && guidedComplete && !showPreview && (
           <SpecFirstStage
             layout={specLayout}
             concept={selectedConcept}
@@ -2901,12 +3163,15 @@ function CadPage({ prompt, result, onResultUpdate }) {
           />
         )}
         {cadMode === "generated" && specLayout && showPreview && <GeneratedCadViewer layout={specLayout} prompt={prompt} />}
-        {cadMode === "generated" && !specLayout && <div className="cad-pending"><Box size={44} /><h2>Accept a concept first</h2><p>Choose a concept on Architecture before generating engineering specs.</p></div>}
+        {cadMode === "generated" && !selectedConcept && <div className="cad-pending"><Box size={44} /><h2>Accept a concept first</h2><p>Choose a concept on Architecture before generating engineering specs.</p></div>}
         {cadMode === "upload" && <StlUploadViewer />}
       </section>
       <aside className="right-rail cad-copy">
-        <h1>{showGeneratedDetails ? specLayout.device : cadMode === "generated" ? selectedConcept?.title || "Generated CAD Workspace" : "Uploaded STL Workspace"}</h1>
+        <h1>{showGeneratedDetails ? specLayout.device : cadMode === "generated" ? selectedConcept?.title || "Guided CAD Workspace" : "Uploaded STL Workspace"}</h1>
         {showGeneratedDetails && prompt && <p>{prompt}</p>}
+        {cadMode === "generated" && !guidedComplete && selectedConcept && (
+          <article className="explain guided-brief-status"><strong>Interactive engineering brief</strong><p>Answer each question in your own words. Specs, hardware layers, and CAD stay paused until the brief is complete.</p><span>Human input required</span></article>
+        )}
         {showGeneratedDetails && insights.length > 0 ? insights.map((card, idx) => (
           <article className="explain" key={card.title}><strong>{idx + 1}. {card.title}</strong><p>{card.text}</p><span>{card.impact}</span></article>
         )) : (
@@ -2958,6 +3223,88 @@ function CadPage({ prompt, result, onResultUpdate }) {
           <Panel title="Component Evidence" icon={Gauge} items={cadEvidenceItems({ ...result, cadLayout: specLayout })} />
         </section>
       )}
+    </div>
+  );
+}
+
+const guidedCadQuestions = [
+  { key: "device", title: "What device are we engineering?", prompt: "Confirm the device or form you want. Use your own wording, such as helmet, sleeve, glove, bottle, or a new form.", placeholder: "Example: A protective football helmet with a removable sensing module." },
+  { key: "hardwareParts", title: "What hardware parts should it include?", prompt: "List the hardware you want included. We will use your answer as the requested hardware brief instead of choosing parts for you.", placeholder: "Example: battery, impact sensor, small PCB, LED, and a vibration motor." },
+  { key: "priority", title: "What aspect matters most?", prompt: "Tell us what should drive the design decisions. You can describe comfort, usability, protection, cleaning, cost, battery life, or anything else.", placeholder: "Example: Comfort and low weight matter more than long battery life." },
+  { key: "designSpecs", title: "What design materials or physical specs do you want?", prompt: "Describe materials, fit, dimensions, flexibility, adjustability, or surface requirements in your own words.", placeholder: "Example: Lightweight shell, soft liner, adjustable fit, and breathable padding." },
+  { key: "hardwareProtection", title: "Is there anything extra to protect the hardware?", prompt: "Add any protection or packaging requirements for wires, batteries, sensors, connectors, or other parts.", placeholder: "Example: Protective silicone around wires and a sealed compartment for the battery." },
+  { key: "biometrics", title: "What patient or user biometrics should we use?", prompt: "Provide the measurements that should influence fit or reach. Leave unknown values as unknown; do not guess them.", placeholder: "Example: Height 5'10, weight 180 lb, head circumference 59 cm, estimated reach 74 cm." },
+  { key: "complexity", title: "How should the device be assembled?", prompt: "Describe whether it should be one piece, modular, removable, serviceable, or made from separate components.", placeholder: "Example: Separate removable electronics pod with replaceable battery and a one-piece soft liner." }
+];
+
+function initialGuidedCadAnswers(concept) {
+  return { device: concept?.title || concept?.formFactor || "" };
+}
+
+function guidedCadPrompt(answers, originalPrompt) {
+  return [
+    "Create the engineering CAD/spec concept from this completed user-provided brief.",
+    `Original design request: ${originalPrompt || "not provided"}`,
+    `Device/form: ${answers.device}`,
+    `Requested hardware parts: ${answers.hardwareParts}`,
+    `Most important design aspect: ${answers.priority}`,
+    `Materials and physical specs: ${answers.designSpecs}`,
+    `Hardware protection or extras: ${answers.hardwareProtection}`,
+    `User biometrics and fit measurements: ${answers.biometrics}`,
+    `Assembly complexity and modularity: ${answers.complexity}`,
+    "Respect the user's requested hardware and priorities. Do not silently substitute a different device form or invent missing biometric values. Return an early engineering concept for human review."
+  ].join("\n");
+}
+
+function futureDirectionPrompt({ originalPrompt, direction, answers, result }) {
+  const disease = result?.subgraph?.disease?.name || result?.extraction?.disease || "the extracted health context";
+  const priorSolutions = (result?.solutionGraph?.previousSolutions || [])
+    .slice(0, 8)
+    .map((solution) => `${solution.title || "solution"} (${solution.formFactor || "form unknown"})`)
+    .join(", ") || "none clearly identified";
+  return [
+    "Build a new evidence-backed concept from a selected future direction. This is a fresh design brief, not a continuation of the prior selected device.",
+    `Original health/design request: ${originalPrompt || "not provided"}`,
+    `Grounded health context: ${disease}`,
+    `Selected AI future direction: ${direction.title}`,
+    `Future direction form factor: ${direction.formFactor}`,
+    `Future direction reasoning: ${direction.description}`,
+    `Why it fits: ${direction.problemFit}`,
+    `What is new: ${direction.novelty}`,
+    `Feasibility and risks: ${direction.feasibility}; ${direction.risks}`,
+    `Next validation: ${direction.nextValidation}`,
+    `Previous-solution graph signals: ${priorSolutions}`,
+    `Device/form brief: ${answers.device}`,
+    `Requested hardware parts: ${answers.hardwareParts}`,
+    `Most important design aspect: ${answers.priority}`,
+    `Materials and physical specs: ${answers.designSpecs}`,
+    `Hardware protection or extras: ${answers.hardwareProtection}`,
+    `User biometrics and fit measurements: ${answers.biometrics}`,
+    `Assembly complexity and modularity: ${answers.complexity}`,
+    "Let the selected future direction strongly influence the new concepts, while preserving the health concern, user goal, safety constraints, and the same PrimeKG/PubTator/literature/guideline evidence flow. Do not silently replace the requested direction with a generic patch, clip-on, or handheld device."
+  ].join("\n");
+}
+
+function GuidedCadIntake({ questions = guidedCadQuestions, step, answers, status, error, phaseLabel = "Interactive Phase 2", submitLabel = "Build Specs From My Brief", loadingLabel = "Applying your complete brief to the engineering spec and CAD layers.", onChange, onSubmit, onBack }) {
+  const question = questions[step];
+  const answer = answers[question.key] || "";
+  return (
+    <div className="guided-cad-intake">
+      <div className="guided-cad-kicker"><span className="eyebrow">{phaseLabel}</span><span>{step + 1} of {questions.length}</span></div>
+      <div className="guided-cad-progress" aria-label={`Step ${step + 1} of ${questions.length}`}>
+        {questions.map((item, index) => <span className={index <= step ? "active" : ""} key={item.key} />)}
+      </div>
+      <h2>{question.title}</h2>
+      <p>{question.prompt}</p>
+      <form onSubmit={onSubmit}>
+        <textarea aria-label={question.title} value={answer} onChange={(event) => onChange(event.target.value)} placeholder={question.placeholder} rows={7} autoFocus />
+        <div className="guided-cad-actions">
+          <button type="button" className="ghost" disabled={step === 0 || status === "loading"} onClick={onBack}>Back</button>
+          <button type="submit" className="primary" disabled={!answer.trim() || status === "loading"}>{status === "loading" ? loadingLabel : step === questions.length - 1 ? submitLabel : "Next Question"}</button>
+        </div>
+      </form>
+      {status === "loading" && <p className="guided-cad-loading"><RefreshCw size={16} /> {loadingLabel}</p>}
+      {error && <div className="design-status error"><span className="status-dot error" />{error}</div>}
     </div>
   );
 }
